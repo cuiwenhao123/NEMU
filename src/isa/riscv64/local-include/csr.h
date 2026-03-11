@@ -672,7 +672,7 @@ CSR_STRUCT_START(mstatus)
   uint64_t tvm : 1; // [20]
   uint64_t tw  : 1; // [21]
   uint64_t tsr : 1; // [22]
-  uint64_t pad3: 1; // [23]
+  uint64_t spelp: 1; // [23]
   uint64_t sdt : 1; // [24]
   uint64_t pad4: 7; // [31:25]
   uint64_t uxl : 2; // [33:32]
@@ -685,7 +685,8 @@ CSR_STRUCT_START(mstatus)
 #else
   uint64_t pad5: 2; // [39:38]
 #endif
-  uint64_t pad6: 2; // [41:40]
+  uint64_t pad6: 1; // [40]
+  uint64_t mpelp: 1; // [41]
   uint64_t mdt : 1; // [42]
   uint64_t pad7:20; // [62:43]
   uint64_t sd  : 1; // [63]
@@ -850,7 +851,9 @@ CSR_STRUCT_END(mconfigptr)
 
 CSR_STRUCT_START(menvcfg)
   uint64_t fiom   : 1; // [0]
-  uint64_t pad0   : 3; // [3:1]
+  uint64_t pad0_0 : 1; // [1]
+  uint64_t lpe    : 1; // [2]
+  uint64_t pad0_1 : 1; // [3]
   uint64_t cbie   : 2; // [5:4]
   uint64_t cbcfe  : 1; // [6]
   uint64_t cbze   : 1; // [7]
@@ -1216,7 +1219,9 @@ CSR_STRUCT_END(stval)
 
 CSR_STRUCT_START(senvcfg)
   uint64_t fiom   : 1; // [0]
-  uint64_t pad0   : 3; // [3:1]
+  uint64_t pad0_0 : 1; // [1]
+  uint64_t lpe    : 1; // [2]
+  uint64_t pad0_1 : 1; // [3]
   uint64_t cbie   : 2; // [5:4]
   uint64_t cbcfe  : 1; // [6]
   uint64_t cbze   : 1; // [7]
@@ -1466,7 +1471,9 @@ CSR_STRUCT_END(hgeie)
 
 CSR_STRUCT_START(henvcfg)
   uint64_t fiom   : 1;  // [0]
-  uint64_t pad0   : 3;  // [3:1]
+  uint64_t pad0_0 : 1;  // [1]
+  uint64_t lpe    : 1;  // [2]
+  uint64_t pad0_1 : 1;  // [3]
   uint64_t cbie   : 2;  // [5:4]
   uint64_t cbcfe  : 1;  // [6]
   uint64_t cbze   : 1;  // [7]
@@ -1518,7 +1525,8 @@ CSR_STRUCT_START(vsstatus)
   uint64_t pad4   : 1;  // [17]
   uint64_t sum    : 1;  // [18]
   uint64_t mxr    : 1;  // [19]
-  uint64_t pad5   : 4;  // [23:20]
+  uint64_t pad5   : 3;  // [22:20]
+  uint64_t spelp  : 1;  // [23]
   uint64_t sdt    : 1;  // [24]
   uint64_t pad6   : 7;  // [31:25]
   uint64_t uxl    : 2;  // [33:32]

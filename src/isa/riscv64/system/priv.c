@@ -423,6 +423,8 @@ static inline word_t* csr_decode(uint32_t addr) {
 
 #define MSTATUS_WMASK_MDT MUXDEF(CONFIG_RV_SMDBLTRP, (0X1UL << 42), 0)
 #define MSTATUS_WMASK_SDT MUXDEF(CONFIG_RV_SSDBLTRP, (0x1UL << 24), 0)
+#define MSTATUS_WMASK_SPELP (0x1UL << 23)
+#define MSTATUS_WMASK_MPELP (0x1UL << 41)
 
 // final mstatus wmask: dependent of the ISA extensions
 #define MSTATUS_WMASK (    \
@@ -431,7 +433,9 @@ static inline word_t* csr_decode(uint32_t addr) {
   MSTATUS_WMASK_RVH      | \
   MSTATUS_WMASK_RVV      | \
   MSTATUS_WMASK_MDT      | \
-  MSTATUS_WMASK_SDT        \
+  MSTATUS_WMASK_SDT      | \
+  MSTATUS_WMASK_SPELP    | \
+  MSTATUS_WMASK_MPELP      \
 )
 
 #define MSTATUS_RMASK_UBE 0X1UL << 6
@@ -484,6 +488,7 @@ static inline word_t* csr_decode(uint32_t addr) {
 #define MENVCFG_RMASK_CBZE    (0x1UL << 7)
 #define MENVCFG_RMASK_CBCFE   (0x1UL << 6)
 #define MENVCFG_RMASK_CBIE    (0x3UL << 4)
+#define MENVCFG_RMASK_LPE     (0x1UL << 2)
 #define MENVCFG_RMASK_PMM     MENVCFG_PMM
 #define MENVCFG_RMASK (   \
   MENVCFG_RMASK_STCE    | \
@@ -492,6 +497,7 @@ static inline word_t* csr_decode(uint32_t addr) {
   MENVCFG_RMASK_CBZE    | \
   MENVCFG_RMASK_CBCFE   | \
   MENVCFG_RMASK_CBIE    | \
+  MENVCFG_RMASK_LPE     | \
   MENVCFG_RMASK_PMM       \
 )
 
@@ -501,6 +507,7 @@ static inline word_t* csr_decode(uint32_t addr) {
 #define MENVCFG_WMASK_CBZE    MUXDEF(CONFIG_RV_CBO, MENVCFG_RMASK_CBZE, 0)
 #define MENVCFG_WMASK_CBCFE   MUXDEF(CONFIG_RV_CBO, MENVCFG_RMASK_CBCFE, 0)
 #define MENVCFG_WMASK_CBIE    MUXDEF(CONFIG_RV_CBO, MENVCFG_RMASK_CBIE, 0)
+#define MENVCFG_WMASK_LPE     MENVCFG_RMASK_LPE
 #define MENVCFG_WMASK_PMM     MUXDEF(CONFIG_RV_SMNPM, MENVCFG_RMASK_PMM, 0)
 #define MENVCFG_WMASK (    \
   MENVCFG_WMASK_STCE     | \
@@ -509,6 +516,7 @@ static inline word_t* csr_decode(uint32_t addr) {
   MENVCFG_WMASK_CBZE     | \
   MENVCFG_WMASK_CBCFE    | \
   MENVCFG_WMASK_CBIE     | \
+  MENVCFG_WMASK_LPE      | \
   MENVCFG_WMASK_PMM        \
 )
 
@@ -517,6 +525,7 @@ static inline word_t* csr_decode(uint32_t addr) {
   MENVCFG_WMASK_CBZE     | \
   MENVCFG_WMASK_CBCFE    | \
   MENVCFG_WMASK_CBIE     | \
+  MENVCFG_WMASK_LPE      | \
   SENVCFG_WMASK_PMM        \
 )
 
@@ -528,12 +537,15 @@ static inline word_t* csr_decode(uint32_t addr) {
   MENVCFG_WMASK_CBZE     | \
   MENVCFG_WMASK_CBCFE    | \
   MENVCFG_WMASK_CBIE     | \
+  MENVCFG_WMASK_LPE      | \
   HENVCFG_WMASK_PMM        \
 )
 
 #define MSECCFG_WMASK_PMM     MUXDEF(CONFIG_RV_SMMPM, MSECCFG_PMM, 0)
+#define MSECCFG_WMASK_MLPE    (0x1UL << 10)
 #define MSECCFG_WMASK (    \
-  MSECCFG_WMASK_PMM        \
+  MSECCFG_WMASK_PMM      | \
+  MSECCFG_WMASK_MLPE       \
 )
 
 #ifdef CONFIG_RV_ZICNTR
@@ -3203,6 +3215,8 @@ word_t riscv64_priv_sret() {
     vsstatus->spp  = MODE_U;
     vsstatus->sie  = vsstatus->spie;
     vsstatus->spie = 1;
+    cpu.elp = vsstatus->spelp;
+    vsstatus->spelp = 0;
     return vsepc->val;
   }
 #endif // CONFIG_RVH
@@ -3236,6 +3250,8 @@ word_t riscv64_priv_sret() {
   cpu.mode = mstatus->spp;
   mstatus->spp = MODE_U;
   update_mmu_state();
+  cpu.elp = mstatus->spelp;
+  mstatus->spelp = 0;
   return sepc->val;
 }
 
@@ -3270,6 +3286,8 @@ word_t riscv64_priv_mret() {
   cpu.mode = mstatus->mpp;
   mstatus->mpp = MODE_U;
   update_mmu_state();
+  cpu.elp = mstatus->mpelp;
+  mstatus->mpelp = 0;
   Loge("Executing mret to 0x%lx", mepc->val);
   return mepc->val;
 }

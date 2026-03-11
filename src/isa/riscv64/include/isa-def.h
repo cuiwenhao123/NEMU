@@ -148,6 +148,8 @@ typedef struct {
   uint64_t tinfo;
 #endif // CONFIG_DIFFTEST_CHECK_SDTRIG
 
+  uint8_t elp;
+
   uint64_t difftest_state_end;
   /** Above will be used and synced by regcpy when run difftest, DO NOT TOUCH ***/
 
