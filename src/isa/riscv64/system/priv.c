@@ -2050,6 +2050,9 @@ static void csr_write(uint32_t csrid, word_t src) {
       if (((senvcfg_t*)&src)->pmm != 0b01) { // 0b01 is reserved
         senvcfg->val = mask_bitset(senvcfg->val, SENVCFG_WMASK_PMM, src);
       }
+      if (senvcfg->lpe == 0) {
+        cpu.elp = 0;
+      }
       break;
 
 #ifdef CONFIG_RV_SMSTATEEN
@@ -2231,6 +2234,9 @@ static void csr_write(uint32_t csrid, word_t src) {
         vsstatus->sdt = 0;
       }
 #endif // CONFIG_RV_SSDBLTRP
+      if (henvcfg->lpe == 0) {
+        cpu.elp = 0;
+      }
       break;
 
 #ifdef CONFIG_RV_SMSTATEEN
@@ -2344,12 +2350,18 @@ static void csr_write(uint32_t csrid, word_t src) {
       if (((menvcfg_t*)&src)->pmm != 0b01) { // 0b01 is reserved
         menvcfg->val = mask_bitset(menvcfg->val, MENVCFG_WMASK_PMM, src);
       }
+      if (menvcfg->lpe == 0) {
+        cpu.elp = 0;
+      }
       break;
 
     case CSR_MSECCFG:
       mseccfg->val = mask_bitset(mseccfg->val, MSECCFG_WMASK & (~MSECCFG_WMASK_PMM), src);
       if (((mseccfg_t*)&src)->pmm != 0b01) { // 0b01 is reserved
         mseccfg->val = mask_bitset(mseccfg->val, MSECCFG_WMASK_PMM, src);
+      }
+      if (mseccfg->mlpe == 0) {
+        cpu.elp = 0;
       }
       break;
 
@@ -3324,6 +3336,8 @@ word_t riscv64_priv_mnret() {
   cpu.mode = mnstatus->mnpp;
   mnstatus->mnpp = MODE_U;
   mnstatus->nmie = 1;
+  cpu.elp = mnstatus->mnpelp;
+  mnstatus->mnpelp = 0;
   update_mmu_state();
   Loge("Executing mnret to 0x%lx", mnepc->val);
   return mnepc->val;

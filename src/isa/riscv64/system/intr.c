@@ -334,6 +334,8 @@ word_t raise_intr(word_t NO, vaddr_t epc) {
     mnstatus->mnpv = cpu.v;
 #endif //CONFIG_RVH
     mnstatus->nmie = 0;
+    mnstatus->mnpelp = cpu.elp;
+    cpu.elp = 0;
     mnepc->val = epc;
     mncause->val = NO;
     cpu.mode = MODE_M;

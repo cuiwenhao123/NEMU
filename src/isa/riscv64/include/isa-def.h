@@ -90,6 +90,11 @@ typedef struct TriggerModule TriggerModule;
 typedef struct IpriosModule IpriosModule;
 typedef struct IpriosSort IpriosSort;
 
+enum {
+  ELP_NO_LP_EXPECTED = 0,
+  ELP_LP_EXPECTED = 1
+};
+
 typedef struct {
   /*** Below will be synced by regcpy when run difftest, DO NOT TOUCH ***/
   union {
