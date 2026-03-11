@@ -506,3 +506,22 @@ index a8a8eb48..6808497f 100644
 
 ## 3. 测试与总结 (Conclusion)
 至此，本项目完全深入到基础指令集规范 (ISA)、CSR 寄生状态控制树以及解码核心模拟器完成了控制流安全的整体落实拓展，彻底对齐了不同嵌套边界情况下的异常恢复逻辑。若要验证真实的特权级程序被保护下的侧信道表现反馈现象，仅需使用搭载有开启最新控制流特性的 LLVM/GCC 工具链去编译输出带有标签签名且具备前置 `lpad` 的二进制指令段。将二进制交由于此版 NEMU 结合内核开关加载执行，即可观测验证 CFI 控制流安全防范特性的落地。
+
+## 4. 与本地版本的细节一致性修正 (Consistency Alignments)
+在实际开发与底层环境对比中，我们进一步排除了初版实现中存在的一些隐蔽结构与代码风格对齐问题，使其完美等价适配：
+
+1. **`elp` 在体系结构中的 Difftest 内存隔离**
+   最初 `elp` 被声明在了 `difftest_state_end` 的界限上方。因为常规的参考模拟器（Reference, 比如 Spike / QEMU）Difftest API 尚未对齐 Zicfilp 的暴露位，放入该区域会因尺寸越界或寄存器结构错位导致 Difftest 桥接失败。目前已将 `uint8_t elp;` 移至了外部执行保留区（并在类型上沿用最严谨安全的无符号字节边界 `uint8_t`）。
+
+2. **枚举定义结构偏移**
+   为了符合宏包归约规律，将 `ELP_NO_LP_EXPECTED` / `ELP_LP_EXPECTED` 移步至了文件底部 `OP_OR` 环境等结构附近。
+
+3. **保留字 Padding 重定义**
+   还原了 `csr.h` 中针对 `menvcfg`、`senvcfg` 和 `henvcfg` 侵入首个 padding bit 取用后原本的 `pad0` 命名，保持原汁原味的占位符名称。
+
+4. **`SSTATUS_RMASK_SPELP` 定义重绑**
+   为了确保外层访问绝对显式可视地感知到 SPELP 位，现在明确补充了 `#define SSTATUS_SPELP (0x1UL << 23)` 并叠加放行了 `#define SSTATUS_RMASK (SSTATUS_BASE | ... | SSTATUS_SPELP)`。
+
+5. **`mseccfg` 写入机制彻底对齐与主动挂起流水线**
+   原版的提纯补丁仅能在 `case CSR_MSECCFG` 触发时进行掩码处理；为了贴合用户本地构建的结构体全值操作安全机制，现已重构成直接赋予 `src` 完整内容 (`mseccfg->val = src;`)，紧接着拦截 10 位直接判定清零要求回滚 `cpu.elp = 0`，最后调用了最关键的 `set_sys_state_flag(SYS_STATE_UPDATE);`。这保证了可以强制 CPU 验证器立即刷洗流水线，并立刻启用新指定的 `mlpe` 上下文安全等级，彻底对齐所有拦截效应！
+
