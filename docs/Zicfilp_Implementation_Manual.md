@@ -368,5 +368,18 @@
 ```
 </details>
 
-## 3. 测试与总结预留 (Conclusion)
-本项目成功深入到基础 ISA, 内存管理以及解码树内核完成了上述拓展。若需要进行真实程序的 Zicfilp 后门与侧信道漏洞注入防范演示，通常需要调用搭载有较新版本且启用 `-mrv64g_zicfilp` 前端控制编译能力的 LLVM/GCC 工具链来构建产生自带有签名且分布 `lpad` 埋点支持验证的完整 ELF / 裸机二进制。导入此二进制于本版本 NEMU 环境中，结合 CSR 使能即可展示对应的安全防护效应。
+### 阶段四：特权边界与 CSR 主动接管修正 (Privilege Boundary & CSR Takeovers)
+在后续查漏补缺中，结合用户之前单独配置的调试参数，完成了更加极端的边缘条件支持与外部调试环境修补：
+
+1. **异常调试与硬级返回边界的防逃逸增强**：
+   - `src/isa/riscv64/include/isa-def.h`: 显式定义规范中的 ELP 联合枚举 `ELP_NO_LP_EXPECTED` 与 `ELP_LP_EXPECTED`。
+   - `src/isa/riscv64/local-include/csr.h`: 为异常机制加入 Debug 级别的 `dcsr.pelp` 和非屏蔽中断级别的寄存器 `mnstatus.mnpelp`。同步修正了 `SSTATUS_RMASK` 与 `MNSTATUS_MASK` 的访问掩码映射，使得这些保护位向内核开放合法性读写。
+   - `src/isa/riscv64/system/intr.c`: 在引发不可屏蔽异常 (NMI) 的陷阱陷入过程中 (`raise_intr`) 专门加入了存留当前 `cpu.elp` 值到 `mnstatus.mnpelp` 的防丢失逻辑。
+   - `src/isa/riscv64/system/priv.c`: 增强了 `csr_write` 机制，在处理任何权限模式通过操作强行使得 `lpe`/`mlpe` 被手动写为 `0` (关闭) 时，主动清空卡死的 `cpu.elp = 0`；同时在特权指令模拟点 `mnret` 中倒序写回 `mnstatus.mnpelp` 给 `cpu.elp`。
+
+2. **配套的平台调试挂载补丁参数**：
+   - *（调试环境适配）* 为了方便开发过程中单独预处理或挂载 GDB 排查控制流验证现场，在根目录 `Makefile` 加入了挂载调试符号并不执行代码优化的安全标志 (`CFLAGS_BUILD += -g -O0`)，并且开辟了一个专门解开并生成宏预处理分析输出流的构建子工具 `preprocess` 目标设定。
+   - *（依赖跟踪与启动修正）* 在 `scripts/build.mk` 中修正了 `BINARYcall_fixdep` 调用约定问题。并在 `src/monitor/monitor.c` 注释移除了 `assert(img_file);` 以放行裸机纯命令流排查时免挂载镜像文件奔溃的严格判定。
+
+## 3. 测试与总结 (Conclusion)
+至此，本项目完全深入到基础指令集规范 (ISA)、CSR 寄生状态控制树以及解码核心模拟器完成了控制流安全的整体落实拓展，彻底对齐了不同嵌套边界情况下的异常恢复逻辑。若要验证真实的特权级程序被保护下的侧信道表现反馈现象，仅需使用搭载有开启最新控制流特性的 LLVM/GCC 工具链去编译输出带有标签签名且具备前置 `lpad` 的二进制指令段。将二进制交由于此版 NEMU 结合内核开关加载执行，即可观测验证 CFI 控制流安全防范特性的落地。
