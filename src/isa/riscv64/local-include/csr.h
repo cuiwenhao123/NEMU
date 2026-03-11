@@ -851,7 +851,7 @@ CSR_STRUCT_END(mconfigptr)
 
 CSR_STRUCT_START(menvcfg)
   uint64_t fiom   : 1; // [0]
-  uint64_t pad0_0 : 1; // [1]
+  uint64_t pad0   : 1; // [1]
   uint64_t lpe    : 1; // [2]
   uint64_t pad0_1 : 1; // [3]
   uint64_t cbie   : 2; // [5:4]
@@ -1472,7 +1472,7 @@ CSR_STRUCT_END(hgeie)
 
 CSR_STRUCT_START(henvcfg)
   uint64_t fiom   : 1;  // [0]
-  uint64_t pad0_0 : 1;  // [1]
+  uint64_t pad0   : 1;  // [1]
   uint64_t lpe    : 1;  // [2]
   uint64_t pad0_1 : 1;  // [3]
   uint64_t cbie   : 2;  // [5:4]

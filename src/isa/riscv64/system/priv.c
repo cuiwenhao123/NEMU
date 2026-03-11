@@ -2356,13 +2356,11 @@ static void csr_write(uint32_t csrid, word_t src) {
       break;
 
     case CSR_MSECCFG:
-      mseccfg->val = mask_bitset(mseccfg->val, MSECCFG_WMASK & (~MSECCFG_WMASK_PMM), src);
-      if (((mseccfg_t*)&src)->pmm != 0b01) { // 0b01 is reserved
-        mseccfg->val = mask_bitset(mseccfg->val, MSECCFG_WMASK_PMM, src);
-      }
-      if (mseccfg->mlpe == 0) {
+      mseccfg->val = src;
+      if ((mseccfg->val & (1ULL << 10)) == 0) {
         cpu.elp = 0;
       }
+      set_sys_state_flag(SYS_STATE_UPDATE);
       break;
 
 #ifdef CONFIG_RV_SMSTATEEN
