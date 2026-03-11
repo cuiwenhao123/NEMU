@@ -410,8 +410,8 @@ index 5b1fcc6f..db5421f2 100644
    uint64_t ebreakvu : 1 ; // [16]
    uint64_t ebreakvs : 1 ; // [17]
 -  uint64_t pad1     : 10; // [27:18]
-+  uint64_t pad1     : 9 ; // [26:18]
-+  uint64_t pelp     : 1 ; // [27]
++  uint64_t pelp     : 1 ; // [18]
++  uint64_t pad1     : 9 ; // [27:19]
    uint64_t debugver : 4 ; // [31:28]
  CSR_STRUCT_END(dcsr)
  
