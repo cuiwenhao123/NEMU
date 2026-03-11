@@ -381,5 +381,128 @@
    - *（调试环境适配）* 为了方便开发过程中单独预处理或挂载 GDB 排查控制流验证现场，在根目录 `Makefile` 加入了挂载调试符号并不执行代码优化的安全标志 (`CFLAGS_BUILD += -g -O0`)，并且开辟了一个专门解开并生成宏预处理分析输出流的构建子工具 `preprocess` 目标设定。
    - *（依赖跟踪与启动修正）* 在 `scripts/build.mk` 中修正了 `BINARYcall_fixdep` 调用约定问题。并在 `src/monitor/monitor.c` 注释移除了 `assert(img_file);` 以放行裸机纯命令流排查时免挂载镜像文件奔溃的严格判定。
 
+<details>
+<summary><b>点击查看本阶段具体源码修改记录 (git diff)</b></summary>
+
+```diff
+diff --git a/src/isa/riscv64/include/isa-def.h b/src/isa/riscv64/include/isa-def.h
+index 4467b33a..762306a5 100644
+--- a/src/isa/riscv64/include/isa-def.h
++++ b/src/isa/riscv64/include/isa-def.h
+@@ -90,6 +90,11 @@ typedef struct TriggerModule TriggerModule;
+ typedef struct IpriosModule IpriosModule;
+ typedef struct IpriosSort IpriosSort;
+ 
++enum {
++  ELP_NO_LP_EXPECTED = 0,
++  ELP_LP_EXPECTED = 1
++};
++
+ typedef struct {
+   /*** Below will be synced by regcpy when run difftest, DO NOT TOUCH ***/
+   union {
+diff --git a/src/isa/riscv64/local-include/csr.h b/src/isa/riscv64/local-include/csr.h
+index 5b1fcc6f..db5421f2 100644
+--- a/src/isa/riscv64/local-include/csr.h
++++ b/src/isa/riscv64/local-include/csr.h
+@@ -984,7 +984,8 @@ CSR_STRUCT_START(dcsr)
+   uint64_t ebreakm  : 1 ; // [15]
+   uint64_t ebreakvu : 1 ; // [16]
+   uint64_t ebreakvs : 1 ; // [17]
+-  uint64_t pad1     : 10; // [27:18]
++  uint64_t pad1     : 9 ; // [26:18]
++  uint64_t pelp     : 1 ; // [27]
+   uint64_t debugver : 4 ; // [31:28]
+ CSR_STRUCT_END(dcsr)
+ 
+@@ -1921,8 +1922,9 @@ MAP(CSRS, CSRS_DECL)
+ // This mask is used to get the value of sstatus from mstatus
+ // SD, SDT, UXL, MXR, SUM, XS, FS, VS, SPP, UBE, SPIE, SIE
+ #define SSTATUS_BASE 0x80000003000de762UL
++#define SSTATUS_SPELP (0x1UL << 23)
+ 
+-#define SSTATUS_RMASK (SSTATUS_BASE | MUXDEF(CONFIG_RV_SMRNMI, SSTATUS_SDT, 0))
++#define SSTATUS_RMASK (SSTATUS_BASE | MUXDEF(CONFIG_RV_SMRNMI, SSTATUS_SDT, 0) | SSTATUS_SPELP)
+ 
+ /** AIA **/
+ #define ISELECT_2F_MASK 0x2F
+@@ -1934,7 +1936,7 @@ MAP(CSRS, CSRS_DECL)
+ 
+ /** Double Trap**/
+ #ifdef CONFIG_RV_SMRNMI
+-  #define MNSTATUS_MASK (MNSTATUS_NMIE | MNSTATUS_MNPV | MNSTATUS_MNPP)
++  #define MNSTATUS_MASK (MNSTATUS_NMIE | MNSTATUS_MNPV | MNSTATUS_MNPP | MNSTATUS_MNPELP)
+ #endif
+ 
+ /**
+diff --git a/src/isa/riscv64/system/intr.c b/src/isa/riscv64/system/intr.c
+index f156b8f9..8aa94e8b 100644
+--- a/src/isa/riscv64/system/intr.c
++++ b/src/isa/riscv64/system/intr.c
+@@ -334,6 +334,8 @@ word_t raise_intr(word_t NO, vaddr_t epc) {
+     mnstatus->mnpv = cpu.v;
+ #endif //CONFIG_RVH
+     mnstatus->nmie = 0;
++    mnstatus->mnpelp = cpu.elp;
++    cpu.elp = 0;
+     mnepc->val = epc;
+     mncause->val = NO;
+     cpu.mode = MODE_M;
+diff --git a/src/isa/riscv64/system/priv.c b/src/isa/riscv64/system/priv.c
+index a8a8eb48..6808497f 100644
+--- a/src/isa/riscv64/system/priv.c
++++ b/src/isa/riscv64/system/priv.c
+@@ -2050,6 +2050,9 @@ static void csr_write(uint32_t csrid, word_t src) {
+       if (((senvcfg_t*)&src)->pmm != 0b01) { // 0b01 is reserved
+         senvcfg->val = mask_bitset(senvcfg->val, SENVCFG_WMASK_PMM, src);
+       }
++      if (senvcfg->lpe == 0) {
++        cpu.elp = 0;
++      }
+       break;
+ 
+ #ifdef CONFIG_RV_SMSTATEEN
+@@ -2231,6 +2234,9 @@ static void csr_write(uint32_t csrid, word_t src) {
+         vsstatus->sdt = 0;
+       }
+ #endif // CONFIG_RV_SSDBLTRP
++      if (henvcfg->lpe == 0) {
++        cpu.elp = 0;
++      }
+       break;
+ 
+ #ifdef CONFIG_RV_SMSTATEEN
+@@ -2344,6 +2350,9 @@ static void csr_write(uint32_t csrid, word_t src) {
+       if (((menvcfg_t*)&src)->pmm != 0b01) { // 0b01 is reserved
+         menvcfg->val = mask_bitset(menvcfg->val, MENVCFG_WMASK_PMM, src);
+       }
++      if (menvcfg->lpe == 0) {
++        cpu.elp = 0;
++      }
+       break;
+ 
+     case CSR_MSECCFG:
+@@ -2351,6 +2360,9 @@ static void csr_write(uint32_t csrid, word_t src) {
+       if (((mseccfg_t*)&src)->pmm != 0b01) { // 0b01 is reserved
+         mseccfg->val = mask_bitset(mseccfg->val, MSECCFG_WMASK_PMM, src);
+       }
++      if (mseccfg->mlpe == 0) {
++        cpu.elp = 0;
++      }
+       break;
+ 
+ #ifdef CONFIG_RV_SMSTATEEN
+@@ -3324,6 +3336,8 @@ word_t riscv64_priv_mnret() {
+   cpu.mode = mnstatus->mnpp;
+   mnstatus->mnpp = MODE_U;
+   mnstatus->nmie = 1;
++  cpu.elp = mnstatus->mnpelp;
++  mnstatus->mnpelp = 0;
+   update_mmu_state();
+   Loge("Executing mnret to 0x%lx", mnepc->val);
+   return mnepc->val;
+```
+</details>
+
 ## 3. 测试与总结 (Conclusion)
 至此，本项目完全深入到基础指令集规范 (ISA)、CSR 寄生状态控制树以及解码核心模拟器完成了控制流安全的整体落实拓展，彻底对齐了不同嵌套边界情况下的异常恢复逻辑。若要验证真实的特权级程序被保护下的侧信道表现反馈现象，仅需使用搭载有开启最新控制流特性的 LLVM/GCC 工具链去编译输出带有标签签名且具备前置 `lpad` 的二进制指令段。将二进制交由于此版 NEMU 结合内核开关加载执行，即可观测验证 CFI 控制流安全防范特性的落地。
