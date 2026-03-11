@@ -169,6 +169,8 @@ word_t raise_intr(word_t NO, vaddr_t epc) {
     vsstatus->spp = cpu.mode;
     vsstatus->spie = vsstatus->sie;
     vsstatus->sie = 0;
+    vsstatus->spelp = cpu.elp;
+    cpu.elp = 0;
     vsstatus->sdt = MUXDEF(CONFIG_RV_SSDBLTRP, henvcfg->dte && menvcfg->dte, 0);
     vstval->val = cpu.trapInfo.tval;
     switch (NO) {
@@ -216,6 +218,8 @@ word_t raise_intr(word_t NO, vaddr_t epc) {
     mstatus->spp = cpu.mode;
     mstatus->spie = mstatus->sie;
     mstatus->sie = 0;
+    mstatus->spelp = cpu.elp;
+    cpu.elp = 0;
     mstatus->sdt = MUXDEF(CONFIG_RV_SSDBLTRP, menvcfg->dte, 0);
     IFDEF(CONFIG_RVH, htval->val = cpu.trapInfo.tval2);
     IFDEF(CONFIG_RVH, htinst->val = cpu.trapInfo.tinst);
@@ -273,6 +277,8 @@ word_t raise_intr(word_t NO, vaddr_t epc) {
     mstatus->mpp = cpu.mode;
     mstatus->mpie = mstatus->mie;
     mstatus->mie = 0;
+    mstatus->mpelp = cpu.elp;
+    cpu.elp = 0;
     mtval->val = cpu.trapInfo.tval;
     IFDEF(CONFIG_RVH, mtval2->val = cpu.trapInfo.tval2);
     IFDEF(CONFIG_RVH, mtinst->val = cpu.trapInfo.tinst);
