@@ -90,6 +90,21 @@ def_EHelper(andi) {
 }
 
 def_EHelper(auipc) {
+  if (unlikely(cpu.elp == 1)) {
+    uint32_t rd = (s->isa.instr.val >> 7) & 0x1f;
+    if (rd != 0) {
+      longjmp_exception(EX_SWC);
+    }
+    if ((s->pc & 0x3) != 0) {
+      longjmp_exception(EX_SWC);
+    }
+    uint32_t lpl = (s->isa.instr.val >> 12) & 0xFFFFF;
+    uint32_t x7_lpl = (reg_l(7) >> 12) & 0xFFFFF;
+    if (lpl != x7_lpl && lpl != 0) {
+      longjmp_exception(EX_SWC);
+    }
+    cpu.elp = 0;
+  }
   rtl_li(s, ddest, id_src1->imm);
 }
 

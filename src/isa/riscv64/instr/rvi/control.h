@@ -22,6 +22,25 @@ def_EHelper(jal) {
 }
 
 def_EHelper(jalr) {
+  bool zicfilp_en = false;
+  if (cpu.mode == MODE_M) {
+    zicfilp_en = mseccfg->mlpe;
+  } else if (cpu.mode == MODE_S) {
+    zicfilp_en = menvcfg->lpe;
+    IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
+  } else if (cpu.mode == MODE_U) {
+    zicfilp_en = senvcfg->lpe;
+    IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
+  }
+  if (zicfilp_en) {
+    uint32_t rs1 = (s->isa.instr.val >> 15) & 0x1f;
+    if (rs1 != 1 && rs1 != 5 && rs1 != 7) {
+      cpu.elp = 1;
+    } else {
+      cpu.elp = 0;
+    }
+  }
+
   // Described at 2.5 Control Transter Instructions
   // The target address is obtained by adding the sign-extended 12-bit I-immediate to the register rs1
   rtl_addi(s, s0, dsrc1, id_src2->imm);

@@ -416,6 +416,14 @@ static void execute(int n) {
     __attribute__((unused)) rtlreg_t ls0, ls1, ls2;
     br_taken = false;
 
+#ifdef CONFIG_ISA_riscv64
+    if (unlikely(cpu.elp == 1)) {
+      if ((s->isa.instr.val & 0x00000FFF) != 0x00000017) {
+        longjmp_exception(EX_SWC);
+      }
+    }
+#endif
+
     goto *(s->EHelper);
 
 #undef s0
@@ -700,6 +708,15 @@ static void execute(int n) {
     cpu.debug.current_pc = s.pc;
     cpu.pc = s.snpc;
     ref_log_cpu("pc = 0x%lx inst %x", s.pc, s.isa.instr.val);
+
+#ifdef CONFIG_ISA_riscv64
+    if (unlikely(cpu.elp == 1)) {
+      if ((s.isa.instr.val & 0x00000FFF) != 0x00000017) {
+        longjmp_exception(EX_SWC);
+      }
+    }
+#endif
+
     s.EHelper(&s);
 
     IFDEF(CONFIG_INSTR_CNT_BY_INSTR, g_nr_guest_instr += 1);
