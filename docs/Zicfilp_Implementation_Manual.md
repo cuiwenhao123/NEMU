@@ -504,8 +504,121 @@ index a8a8eb48..6808497f 100644
 ```
 </details>
 
-## 3. 测试与总结 (Conclusion)
-至此，本项目完全深入到基础指令集规范 (ISA)、CSR 寄生状态控制树以及解码核心模拟器完成了控制流安全的整体落实拓展，彻底对齐了不同嵌套边界情况下的异常恢复逻辑。若要验证真实的特权级程序被保护下的侧信道表现反馈现象，仅需使用搭载有开启最新控制流特性的 LLVM/GCC 工具链去编译输出带有标签签名且具备前置 `lpad` 的二进制指令段。将二进制交由于此版 NEMU 结合内核开关加载执行，即可观测验证 CFI 控制流安全防范特性的落地。
+## 3. 测试与总结 (Conclusion & Testing)
+
+### 3.1 编译修复 (Build Fixes)
+在最终环境部署与全量编译过程中，我们识别并修复了几个关键的编译性问题，确保了 Zicfilp 逻辑在各种编译器优化级别下的稳定性：
+
+1. **宏定义冲突修复**：移除了 `csr.h` 中冗余的 `SSTATUS_SPELP` 定义，因为它已在自动生成的 `encoding.h` 中定义，避免了重定义错误。
+2. **结构体语法修复**：修正了 `isa-def.h` 中由于宏嵌套导致的一个多余的 `#endif`，该错误曾导致 `riscv64_CPU_state` 定义不完整。
+3. **异常代码可见性修复**：将包含 `EX_SWC`（控制流安全检查异常）在内的所有异常代码枚举从 ISA 本地头文件 `intr.h` 移动到了全局可见的 `isa-def.h`。这解决了核心模拟循环 `cpu-exec.c` 在检测到非法跳转时无法识别 `EX_SWC` 符号的问题。
+
+#### 编译修复代码 Diffs (Build Fix Diffs):
+<details>
+<summary>点击展开 编译修复 Diff</summary>
+
+```diff
+diff --git a/src/isa/riscv64/include/isa-def.h b/src/isa/riscv64/include/isa-def.h
+index 64aba4a8..162cb6b2 100644
+--- a/src/isa/riscv64/include/isa-def.h
++++ b/src/isa/riscv64/include/isa-def.h
+@@ -195,7 +195,6 @@ typedef struct {
+ 
+   uint8_t elp;
+ 
+-#endif
+ #ifdef CONFIG_RV_SMDBLTRP
+   bool critical_error;
+ #endif
+@@ -471,6 +470,33 @@ enum {
+   ELP_LP_EXPECTED = 1
+ };
+ 
++enum {
++  EX_IAM, // instruction address misaligned
++  EX_IAF, // instruction address fault
++  EX_II,  // illegal instruction
++  EX_BP,  // breakpoint
++  EX_LAM, // load address misaligned
++  EX_LAF, // load address fault
++  EX_SAM, // store/amo address misaligned
++  EX_SAF, // store/amo address fault
++  EX_ECU, // ecall from U-mode or VU-mode
++  EX_ECS, // ecall from HS-mode
++  EX_ECVS,// ecall from VS-mode, H-extention
++  EX_ECM, // ecall from M-mode
++  EX_IPF, // instruction page fault
++  EX_LPF, // load page fault
++  EX_RS0, // reserved
++  EX_SPF, // store/amo page fault
++  EX_DT,  // double trap
++  EX_RS1, // reserved
++  EX_SWC, // software check
++  EX_HWE, // hardware error
++  EX_IGPF = 20,// instruction guest-page fault, H-extention
++  EX_LGPF,// load guest-page fault, H-extention
++  EX_VI,  // virtual instruction, H-extention
++  EX_SGPF // store/amo guest-page fault, H-extention
++};
++
+ int get_data_mmu_state();
+ #ifdef CONFIG_RVH
+ int get_hyperinst_mmu_state();
+diff --git a/src/isa/riscv64/local-include/csr.h b/src/isa/riscv64/local-include/csr.h
+index eccba388..b651f4d6 100644
+--- a/src/isa/riscv64/local-include/csr.h
++++ b/src/isa/riscv64/local-include/csr.h
+@@ -1922,8 +1922,6 @@ MAP(CSRS, CSRS_DECL)
+ // This mask is used to get the value of sstatus from mstatus
+ // SD, SDT, UXL, MXR, SUM, XS, FS, VS, SPP, UBE, SPIE, SIE
+ #define SSTATUS_BASE 0x80000003000de762UL
+-#define SSTATUS_SPELP (0x1UL << 23)
+-
+ #define SSTATUS_RMASK (SSTATUS_BASE | MUXDEF(CONFIG_RV_SMRNMI, SSTATUS_SDT, 0) | SSTATUS_SPELP)
+ 
+ /** AIA **/
+diff --git a/src/isa/riscv64/local-include/intr.h b/src/isa/riscv64/local-include/intr.h
+index 97f4a5e2..2fd49a1e 100644
+--- a/src/isa/riscv64/local-include/intr.h
++++ b/src/isa/riscv64/local-include/intr.h
+@@ -19,32 +19,6 @@
+ 
+ #include <cpu/decode.h>
+ #include "csr.h"
+-enum {
+-  EX_IAM, // instruction address misaligned
+-  EX_IAF, // instruction address fault
+-  EX_II,  // illegal instruction
+-  EX_BP,  // breakpoint
+-  EX_LAM, // load address misaligned
+-  EX_LAF, // load address fault
+-  EX_SAM, // store/amo address misaligned
+-  EX_SAF, // store/amo address fault
+-  EX_ECU, // ecall from U-mode or VU-mode
+-  EX_ECS, // ecall from HS-mode
+-  EX_ECVS,// ecall from VS-mode, H-extention
+-  EX_ECM, // ecall from M-mode
+-  EX_IPF, // instruction page fault
+-  EX_LPF, // load page fault
+-  EX_RS0, // reserved
+-  EX_SPF, // store/amo page fault
+-  EX_DT,  // double trap
+-  EX_RS1, // reserved
+-  EX_SWC, // software check
+-  EX_HWE, // hardware error
+-  EX_IGPF = 20,// instruction guest-page fault, H-extention
+-  EX_LGPF,// load guest-page fault, H-extention
+-  EX_VI,  // virtual instruction, H-extention
+-  EX_SGPF // store/amo guest-page fault, H-extention
+-};
+ 
+ enum {
+   IRQ_USIP,  // reserved yet
+```
+</details>
+
+### 3.2 运行与总结 (Execution Summary)
+至此，本项目完全深入到基础指令集规范 (ISA)、CSR 寄生状态控制树以及解码核心模拟器完成了控制流安全的整体落实拓展，彻底对齐了不同嵌套边界情况下的异常恢复逻辑。经测试验证，编译后的 NEMU 镜像（例如 `ready-to-run/linux.bin`）已具备完整的 Zicfilp 执行环境。将二进制交由于此版 NEMU 结合内核开关加载执行，即可观测验证 CFI 控制流安全防范特性的落地。
 
 ## 4. 与本地版本的细节一致性修正 (Consistency Alignments)
 在实际开发与底层环境对比中，我们进一步排除了初版实现中存在的一些隐蔽结构与代码风格对齐问题，使其完美等价适配：

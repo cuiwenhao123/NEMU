@@ -195,7 +195,6 @@ typedef struct {
 
   uint8_t elp;
 
-#endif
 #ifdef CONFIG_RV_SMDBLTRP
   bool critical_error;
 #endif
@@ -469,6 +468,33 @@ enum { OP_OR = 0, OP_AND, OP_XOR, OP_ADD = 4 };
 enum {
   ELP_NO_LP_EXPECTED = 0,
   ELP_LP_EXPECTED = 1
+};
+
+enum {
+  EX_IAM, // instruction address misaligned
+  EX_IAF, // instruction address fault
+  EX_II,  // illegal instruction
+  EX_BP,  // breakpoint
+  EX_LAM, // load address misaligned
+  EX_LAF, // load address fault
+  EX_SAM, // store/amo address misaligned
+  EX_SAF, // store/amo address fault
+  EX_ECU, // ecall from U-mode or VU-mode
+  EX_ECS, // ecall from HS-mode
+  EX_ECVS,// ecall from VS-mode, H-extention
+  EX_ECM, // ecall from M-mode
+  EX_IPF, // instruction page fault
+  EX_LPF, // load page fault
+  EX_RS0, // reserved
+  EX_SPF, // store/amo page fault
+  EX_DT,  // double trap
+  EX_RS1, // reserved
+  EX_SWC, // software check
+  EX_HWE, // hardware error
+  EX_IGPF = 20,// instruction guest-page fault, H-extention
+  EX_LGPF,// load guest-page fault, H-extention
+  EX_VI,  // virtual instruction, H-extention
+  EX_SGPF // store/amo guest-page fault, H-extention
 };
 
 int get_data_mmu_state();

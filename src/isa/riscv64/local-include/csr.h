@@ -1922,8 +1922,6 @@ MAP(CSRS, CSRS_DECL)
 // This mask is used to get the value of sstatus from mstatus
 // SD, SDT, UXL, MXR, SUM, XS, FS, VS, SPP, UBE, SPIE, SIE
 #define SSTATUS_BASE 0x80000003000de762UL
-#define SSTATUS_SPELP (0x1UL << 23)
-
 #define SSTATUS_RMASK (SSTATUS_BASE | MUXDEF(CONFIG_RV_SMRNMI, SSTATUS_SDT, 0) | SSTATUS_SPELP)
 
 /** AIA **/
