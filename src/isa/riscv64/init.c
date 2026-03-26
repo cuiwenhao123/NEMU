@@ -84,6 +84,7 @@ void init_isa() {
 #ifdef CONFIG_RV_SMRNMI
 // as opensbi and linux not support smrnmi, so we default init nmie = 1 to pass ci
   mnstatus->nmie = ISDEF(CONFIG_NMIE_INIT);
+  Log("mnstatus->nmie initialized to %d", mnstatus->nmie);
 #endif //CONFIG_RV_SMRNMI
 
 #ifdef CONFIG_RV_SSTC

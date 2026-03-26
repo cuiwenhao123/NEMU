@@ -638,3 +638,52 @@ index 97f4a5e2..2fd49a1e 100644
 5. **`mseccfg` 写入机制彻底对齐与主动挂起流水线**
    原版的提纯补丁仅能在 `case CSR_MSECCFG` 触发时进行掩码处理；为了贴合用户本地构建的结构体全值操作安全机制，现已重构成直接赋予 `src` 完整内容 (`mseccfg->val = src;`)，紧接着拦截 10 位直接判定清零要求回滚 `cpu.elp = 0`，最后调用了最关键的 `set_sys_state_flag(SYS_STATE_UPDATE);`。这保证了可以强制 CPU 验证器立即刷洗流水线，并立刻启用新指定的 `mlpe` 上下文安全等级，彻底对齐所有拦截效应！
 
+## 5. Smrnmi 扩展兼容性与初始化修正 (Smrnmi Compatibility & Initialization Fix)
+在结合 `Smrnmi` (Resumable Non-Maskable Interrupts) 扩展使用 Zicfilp 时，我们发现并修复了一个关键的初始化问题：
+
+1. **`mnstatus.nmie` 初始化需求**：
+   根据 RISC-V 规范，当使能 Smrnmi 时，`mnstatus.nmie` 位控制非屏蔽中断的使能。如果该位为 0，任何 trap（包括 Zicfilp 触发的 `EX_SWC`）都会被硬件视为致命的“双重 trap”并导致系统崩溃。
+2. **修正逻辑**：
+   在 `src/isa/riscv64/init.c` 中，我们确保 `mnstatus.nmie` 在复位时被正确初始化为 1（通过 `CONFIG_NMIE_INIT` 配置）。这保证了在正常执行流中发生 Zicfilp 异常时，处理器能够正常进入异常处理程序，而不是直接触发致命错误。
+3. **调试增强**：
+   更新了 `src/isa/riscv64/system/intr.c` 中的错误提示，在触发“双重 trap”时打印详细的异常原因 (cause NO) 和指令地址 (epc)，便于快速定位控制流违规位置。
+
+#### 源码修改详情：
+```diff
+--- a/src/isa/riscv64/init.c
++++ b/src/isa/riscv64/init.c
+@@ -84,6 +84,7 @@ void init_isa() {
+ #ifdef CONFIG_RV_SMRNMI
+ // as opensbi and linux not support smrnmi, so we default init nmie = 1 to pass ci
+   mnstatus->nmie = ISDEF(CONFIG_NMIE_INIT);
++  Log("mnstatus->nmie initialized to %d", mnstatus->nmie);
+ #endif //CONFIG_RV_SMRNMI
+
+--- a/src/isa/riscv64/system/intr.c
++++ b/src/isa/riscv64/system/intr.c
+@@ -117,7 +117,7 @@ word_t raise_intr(word_t NO, vaddr_t epc) {
+ #else
+-    printf("\33[1;31mHIT CRITICAL ERROR\33[0m: trap when mnstatus.nmie close, please check if software cause a double trap.\n");
++    printf("\33[1;31mHIT CRITICAL ERROR\33[0m: trap when mnstatus.nmie close, please check if software cause a double trap. cause NO: %ld, epc: " FMT_WORD "\n", NO, epc);
+     nemu_state.state = NEMU_END;
+```
+
+## 6. 常见问题与故障排查案例 (Common Issues & Debugging Case Study)
+
+在 Zicfilp 的开发和测试过程中，我们遇到并分析了一个典型的“假性 Zicfilp 异常”导致双重 Trap 的案例，这对于裸机环境的开发具有重要的参考价值：
+
+### 6.1 案例：ELF 文件头部引起的双重 Trap
+**现象**：程序启动即崩溃，报错 `HIT CRITICAL ERROR: trap when mnstatus.nmie close... cause NO: 1, epc: 0x0`。
+
+**原因分析**：
+1. **加载机制冲突**：NEMU 默认将输入文件视为 **Raw Binary (原始二进制)** 加载到 `RESET_VECTOR` (通常为 `0x80000000`)。
+2. **非法指令触发**：若用户提供了 **ELF 格式** 的可执行文件，NEMU 会将其文件头（以 `\x7fELF` 开头）直接加载到内存。处理器执行起始位置时，会将 `\x7fELF` 识别为**非法指令 (`EX_II`)**。
+3. **跳转至 0x0**：由于未初始化 `mtvec` (异常处理入口)，处理器在处理非法指令异常时默认跳转到 `0x0` 地址。
+4. **指令取指陷阱**：PC 来到 `0x0` 触发了**指令地址错误 (`EX_IAF`, cause 1)**。
+5. **触发双重 Trap**：因为当前处于异常处理上下文中（`mnstatus.nmie` 已被硬件闭合），再次发生的异常被 NEMU 判定为致命的双重 Trap。
+
+**解决方案建议**：
+- **转换格式**：使用 `riscv64-unknown-elf-objcopy -O binary test.riscv test.bin` 将 ELF 转换为二进制文件。
+- **使用 AM 框架**：推荐使用 AbstractMachine 提供的链接脚本和启动代码，确保程序正确链接并以 Raw Binary 形式加载。
+- **验证 Entry Point**：通过 `readelf -h` 确认程序的 Entry point address 是否与 NEMU 的 `RESET_VECTOR` 一致。
+

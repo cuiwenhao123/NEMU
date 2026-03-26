@@ -115,7 +115,7 @@ word_t raise_intr(word_t NO, vaddr_t epc) {
 #ifdef CONFIG_SHARE
     IFDEF(CONFIG_RV_SMDBLTRP, cpu.critical_error = true);// this will compare in difftest
 #else
-    printf("\33[1;31mHIT CRITICAL ERROR\33[0m: trap when mnstatus.nmie close, please check if software cause a double trap.\n");
+    printf("\33[1;31mHIT CRITICAL ERROR\33[0m: trap when mnstatus.nmie close, please check if software cause a double trap. cause NO: %ld, epc: " FMT_WORD "\n", NO, epc);
     nemu_state.state = NEMU_END;
     nemu_state.halt_pc = epc;
     nemu_state.halt_ret = 0;
