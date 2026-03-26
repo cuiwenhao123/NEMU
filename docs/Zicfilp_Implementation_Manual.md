@@ -676,14 +676,23 @@ index 97f4a5e2..2fd49a1e 100644
 **现象**：程序启动即崩溃，报错 `HIT CRITICAL ERROR: trap when mnstatus.nmie close... cause NO: 1, epc: 0x0`。
 
 **原因分析**：
-1. **加载机制冲突**：NEMU 默认将输入文件视为 **Raw Binary (原始二进制)** 加载到 `RESET_VECTOR` (通常为 `0x80000000`)。
-2. **非法指令触发**：若用户提供了 **ELF 格式** 的可执行文件，NEMU 会将其文件头（以 `\x7fELF` 开头）直接加载到内存。处理器执行起始位置时，会将 `\x7fELF` 识别为**非法指令 (`EX_II`)**。
-3. **跳转至 0x0**：由于未初始化 `mtvec` (异常处理入口)，处理器在处理非法指令异常时默认跳转到 `0x0` 地址。
-4. **指令取指陷阱**：PC 来到 `0x0` 触发了**指令地址错误 (`EX_IAF`, cause 1)**。
-5. **触发双重 Trap**：因为当前处于异常处理上下文中（`mnstatus.nmie` 已被硬件闭合），再次发生的异常被 NEMU 判定为致命的双重 Trap。
+1. **NEMU 默认加载的是 Raw Binary (纯二进制裸数据)，而不是 ELF 格式** 当运行 ./build/riscv64-nemu-interpreter ./ready-to-run/test.riscv 时，NEMU 会把 test.riscv 当作纯数据，直接从头开始原封不动地拷贝到虚拟内存的起始地址（通常是 0x80000000）。 但是 test.riscv 是一个 ELF 文件！ELF 文件的开头并不是可执行的机器码，而是魔数（Magic Number: \x7f E L F）。当 RISC-V 处理器尝试去执行 0x80000000 处的代码时，它读到了 \x7fELF（即 0x464c457f），这在 RISC-V 中是一条非法的无效指令！
+2. **为什么会报错 cause NO: 1, epc: 0x0？**
+处理器读到 \x7fELF 触发了非法指令异常（EX_II），NEMU 跳转到异常处理地址（由于没有初始化，默认跳去了 0x0）。因为配置了双重 Trap 相关的宏，处理这个异常时硬件会自动清除 mnstatus.nmie 到 0。当 PC 来到 0x0 时，去取指又触发了指令地址错误（Instruction Address Fault, EX_IAF，对应 cause 1）。这时候 NEMU 的异常处理入口检查到 mnstatus.nmie == 0，于是直接报出了我们之前看到的那个 CRITICAL ERROR！
+3. **程序的链接地址不对** 。readelf 显示您的程序 Entry point address 是 0x1014e，而且它是针对 UNIX - System V (通常是在操作系统/Linux 上跑的用户态程序)。但是 NEMU 是一个裸机 (Bare-metal) 环境，没有操作系统帮您加载 ELF、没有系统调用支持您的 printf。NEMU 默认的重置 PC (Reset Vector) 是 0x80000000，根本不是 0x10000 附近。
 
 **解决方案建议**：
 - **转换格式**：使用 `riscv64-unknown-elf-objcopy -O binary test.riscv test.bin` 将 ELF 转换为二进制文件。
 - **使用 AM 框架**：推荐使用 AbstractMachine 提供的链接脚本和启动代码，确保程序正确链接并以 Raw Binary 形式加载。
 - **验证 Entry Point**：通过 `readelf -h` 确认程序的 Entry point address 是否与 NEMU 的 `RESET_VECTOR` 一致。
+
+### 6.2 案例：缺失裸机启动环境导致非法访存
+**现象**：使用 `objcopy` 转出的 `test.bin` 运行后，仅执行了极少数几条指令（例如 2 条）就再次爆出完全相同的 `HIT CRITICAL ERROR... epc: 0x0`！
+
+**原因分析**：
+1. **ABI 与执行环境不配**：在普通 Linux 环境下，程序入口 `_start`（如 glibc 或 Newlib 提供）在执行前依赖操作系统（OS）预先配置好栈指针（`sp`）和全局数据指针（`gp`）。
+2. **栈异常导致崩溃**：在 NEMU 的裸机环境中，`sp` 和 `gp` 等寄存器初始可能都是 `0`。当剥离了 ELF 的 `test.bin` 开始直接执行前几条启动代码时，只要遇到任何压栈操作（如 `addi sp, sp, -16` 然后 `sd ra, 0(sp)`），就会立刻触发 **Store/AMO Address Fault (`EX_SAF`)** 或者非法访存异常。
+3. **连锁反应**：该异常发生时，异常仍旧陷入 M-Mode。同理，NEMU 以双重 Trap 将 `mnstatus.nmie` 闭合，并跳转至未初始化的异常基地 `0x0` 获取指令，进而诱发同款 `EX_IAF` 与 `CRITICAL ERROR`！
+
+**结论**：在 NEMU 这类纯裸机直接运行 C 程序时，不能随意拷贝 Linux 平台上的默认编译产物。唯一可靠的方案是：引入专用的裸机 Runtime 环境（如 AM 的 `am-kernels`），其中提供针对 NEMU PC 起始地址定制的链接脚本以及负责配置硬件级栈帧的 `.S` 引导汇编程序。
 
