@@ -686,6 +686,25 @@ index 97f4a5e2..2fd49a1e 100644
 - **使用 AM 框架**：推荐使用 AbstractMachine 提供的链接脚本和启动代码，确保程序正确链接并以 Raw Binary 形式加载。
 - **验证 Entry Point**：通过 `readelf -h` 确认程序的 Entry point address 是否与 NEMU 的 `RESET_VECTOR` 一致。
 
+## 7. 为什么 Linux 镜像可以运行，而简单的 C 程序不行？ (Why Linux works but your C program fails?)
+
+这是一个非常重要且基础的系统级编程问题。主要区别在于 **“自足性 (Self-sufficiency)”** 和 **“运行时环境 (Runtime Environment)”**：
+
+### 7.1 启动起点与 Reset Vector
+- **Linux (`linux.bin`)**：它是专门为裸机环境编译的。它的入口地址被固定在 `0x80000000`。当 NEMU 启动并将 PC 指向这里时，第一条指令就是 Linux 的启动代码。
+- **您的 `test.bin`**：原本是一个为操作系统（如 Linux）设计的 ELF 文件，它的入口（`Entry Point`）可能在 `0x1014e` 甚至其他地方。通过 `objcopy` 强行转换后，虽然代码被搬到了 `0x80000000`，但代码内部引用的地址可能还是基于 `0x10000` 的，导致程序运行错乱。
+
+### 7.2 栈 (Stack) 与 运行环境初始化 (CRT0)
+- **Linux**：镜像内部包含了 `CRT0` 代码（通常是汇编编写的 `head.S`）。它在跳转到 C 语言函数之前，会手动执行 `la sp, stack_top` 这样的指令。**它自己给自己准备了“板凳和桌子（栈空间）”**。
+- **您的 `test.bin`**：使用了标准库（如 Newlib）。这类库的代码假设“桌子已经摆好了”，即假设操作系统已经把 `sp` 指针设好了。但在 NEMU 这里，没人帮它设置。当程序执行 `addi sp, sp, -16` 后，`sp` 变成了一个非法的小负数（或接近 0 的地址），一写内存就崩了。
+
+### 3. 系统调用 (System Calls)
+- **Linux**：它自己就是操作系统，它不调用 `ecall`（或者它只在内部使用）。它输出字符是直接通过向 UART 串口寄存器地址写数据实现的。
+- **您的 `test.bin`**：调用的 `printf` 最终会触发一个 `ecall` 指令，试图向“不存在的操作系统”请求打印服务。NEMU 作为一个裸机模拟器，默认并不知道如何处理这个 `ecall`，通常会触发异常并跳转到物理地址 `0x0`（导致我们见到的 Double Trap）。
+
+**总结建议**：
+在 NEMU 上跑 C 程序，必须使用类似 **AbstractMachine (AM)** 的框架。AM 会提供那份关键的 `CRT0` 汇编代码，帮您初始化 `sp`、`gp` 以及实现能直接驱动硬件的 `printf`。
+
 ### 6.2 案例：缺失裸机启动环境导致非法访存
 **现象**：使用 `objcopy` 转出的 `test.bin` 运行后，仅执行了极少数几条指令（例如 2 条）就再次爆出完全相同的 `HIT CRITICAL ERROR... epc: 0x0`！
 
