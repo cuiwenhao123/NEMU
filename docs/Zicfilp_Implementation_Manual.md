@@ -676,37 +676,7 @@ index 97f4a5e2..2fd49a1e 100644
 **现象**：程序启动即崩溃，报错 `HIT CRITICAL ERROR: trap when mnstatus.nmie close... cause NO: 1, epc: 0x0`。
 
 **原因分析**：
-1. **NEMU 默认加载的是 Raw Binary (纯二进制裸数据)，而不是 ELF 格式** 当运行 ./build/riscv64-nemu-interpreter ./ready-to-run/test.riscv 时，NEMU 会把 test.riscv 当作纯数据，直接从头开始原封不动地拷贝到虚拟内存的起始地址（通常是 0x80000000）。 但是 test.riscv 是一个 ELF 文件！ELF 文件的开头并不是可执行的机器码，而是魔数（Magic Number: \x7f E L F）。当 RISC-V 处理器尝试去执行 0x80000000 处的代码时，它读到了 \x7fELF（即 0x464c457f），这在 RISC-V 中是一条非法的无效指令！
-2. **为什么会报错 cause NO: 1, epc: 0x0？**
-处理器读到 \x7fELF 触发了非法指令异常（EX_II），NEMU 跳转到异常处理地址（由于没有初始化，默认跳去了 0x0）。因为配置了双重 Trap 相关的宏，处理这个异常时硬件会自动清除 mnstatus.nmie 到 0。当 PC 来到 0x0 时，去取指又触发了指令地址错误（Instruction Address Fault, EX_IAF，对应 cause 1）。这时候 NEMU 的异常处理入口检查到 mnstatus.nmie == 0，于是直接报出了我们之前看到的那个 CRITICAL ERROR！
-3. **程序的链接地址不对** 。readelf 显示您的程序 Entry point address 是 0x1014e，而且它是针对 UNIX - System V (通常是在操作系统/Linux 上跑的用户态程序)。但是 NEMU 是一个裸机 (Bare-metal) 环境，没有操作系统帮您加载 ELF、没有系统调用支持您的 printf。NEMU 默认的重置 PC (Reset Vector) 是 0x80000000，根本不是 0x10000 附近。
-
-**解决方案建议**：
-- **转换格式**：使用 `riscv64-unknown-elf-objcopy -O binary test.riscv test.bin` 将 ELF 转换为二进制文件。
-- **使用 AM 框架**：推荐使用 AbstractMachine 提供的链接脚本和启动代码，确保程序正确链接并以 Raw Binary 形式加载。
-- **验证 Entry Point**：通过 `readelf -h` 确认程序的 Entry point address 是否与 NEMU 的 `RESET_VECTOR` 一致。
-
-### 6.2 案例：缺失裸机启动环境导致非法访存
-**现象**：使用 `objcopy` 转出的 `test.bin` 运行后，仅执行了极少数几条指令（例如 2 条）就再次爆出完全相同的 `HIT CRITICAL ERROR... epc: 0x0`！
-
-**原因分析**：
-1. **ABI 与执行环境不配**：在普通 Linux 环境下，程序入口 `_start`（如 glibc 或 Newlib 提供）在执行前依赖操作系统（OS）预先配置好栈指针（`sp`）和全局数据指针（`gp`）。
-2. **栈异常导致崩溃**：在 NEMU 的裸机环境中，`sp` 和 `gp` 等寄存器初始可能都是 `0`。当剥离了 ELF 的 `test.bin` 开始直接执行前几条启动代码时，只要遇到任何压栈操作（如 `addi sp, sp, -16` 然后 `sd ra, 0(sp)`），就会立刻触发 **Store/AMO Address Fault (`EX_SAF`)** 或者非法访存异常。
-3. **连锁反应**：该异常发生时，异常仍旧陷入 M-Mode。同理，NEMU 以双重 Trap 将 `mnstatus.nmie` 闭合，并跳转至未初始化的异常基地 `0x0` 获取指令，进而诱发同款 `EX_IAF` 与 `CRITICAL ERROR`！
-
-**结论**：在 NEMU 这类纯裸机直接运行 C 程序时，不能随意拷贝 Linux 平台上的默认编译产物。唯一可靠的方案是：引入专用的裸机 Runtime 环境（如 AM 的 `am-kernels`），其中提供针对 NEMU PC 起始地址定制的链接脚本以及负责配置硬件级栈帧的 `.S` 引导汇编程序。
-
-
-## 7. 为什么 Linux 镜像可以运行，而简单的 C 程序不行？ (Why Linux works but your C program fails?)
-
-这是一个非常重要且基础的系统级编程问题。主要区别在于 **“自足性 (Self-sufficiency)”** 和 **“运行时环境 (Runtime Environment)”**：
-
-### 7.1 启动起点与 Reset Vector
-- **Linux (`linux.bin`)**：它是专门为裸机环境编译的。它的入口地址被固定在 `0x80000000`。当 NEMU 启动并将 PC 指向这里时，第一条指令就是 Linux 的启动代码。
-- **您的 `test.bin`**：原本是一个为操作系统（如 Linux）设计的 ELF 文件，它的入口（`Entry Point`）可能在 `0x1014e` 甚至其他地方。通过 `objcopy` 强行转换后，虽然代码被搬到了 `0x80000000`，但代码内部引用的地址可能还是基于 `0x10000` 的，导致程序运行错乱。
-
-### 7.2 栈 (Stack) 与 运行环境初始化 (CRT0)
-- **Linux**：镜像内部包含了 `CRT0` 代码（通常是汇编编写的 `head.S`）。它在跳转到 C 语言函数之前，会手动执行 `la sp, stack_top` 这样的指令。**它自己给自己准备了“板凳和桌子（栈空间）”**。
+1. **NEMU 默认加载的是 Raw Binary (纯二进制裸数据)，而不是 ELF 格式** 当运行 ./build/riscv64-nemu-interpreter ./ready-to-run/test.r��到 C 语言函数之前，会手动执行 `la sp, stack_top` 这样的指令。**它自己给自己准备了“板凳和桌子（栈空间）”**。
 - **您的 `test.bin`**：使用了标准库（如 Newlib）。这类库的代码假设“桌子已经摆好了”，即假设操作系统已经把 `sp` 指针设好了。但在 NEMU 这里，没人帮它设置。当程序执行 `addi sp, sp, -16` 后，`sp` 变成了一个非法的小负数（或接近 0 的地址），一写内存就崩了。
 
 ### 3. 系统调用 (System Calls)
@@ -772,34 +742,108 @@ CFLAGS += -march=rv64gc_zicfilp
 *   `src/isa/riscv64/instr/rvc/exec.h` 中的 **`c_jr`** 及 **`c_jalr`**
 *   `src/isa/riscv64/instr/pseudo.h` 中的 **`p_ret`**
 
-**修复的核心代码片段** (以 `c_jr` 为例)：
-```c
-def_EHelper(c_jr) {
-  // Zicfilp: 检查间接跳转后是否需要验证 Landing Pad
-  {
-    bool zicfilp_en = false;
-    if (cpu.mode == MODE_M) {
-      zicfilp_en = mseccfg->mlpe;
-    } else if (cpu.mode == MODE_S) {
-      zicfilp_en = menvcfg->lpe;
-      IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
-    } else if (cpu.mode == MODE_U) {
-      zicfilp_en = senvcfg->lpe;
-      IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
-    }
-    if (zicfilp_en) {
-      uint32_t rs1 = (s->isa.instr.val >> 15) & 0x1f;
-      // Zicfilp 规定，如果使用 x1, x5 且不使用 x7 作为链接寄存器，则认为是软件返回（无需lpad）
-      if (rs1 != 1 && rs1 != 5 && rs1 != 7) {
-        cpu.elp = 1;
-      } else {
-        cpu.elp = 0;
-      }
-    }
-  }
-  // 执行原本的跳转逻辑...
+**修复的代码 Diff**：
+
+```diff
+diff --git a/src/isa/riscv64/instr/pseudo.h b/src/isa/riscv64/instr/pseudo.h
+index d11a864e..71d28611 100644
+--- a/src/isa/riscv64/instr/pseudo.h
++++ b/src/isa/riscv64/instr/pseudo.h
+@@ -65,6 +65,28 @@ def_EHelper(p_jal) {
+ }
+ 
+ def_EHelper(p_ret) {
++  // Zicfilp: check if landing pad is expected after indirect jump
++  {
++    bool zicfilp_en = false;
++    if (cpu.mode == MODE_M) {
++      zicfilp_en = mseccfg->mlpe;
++    } else if (cpu.mode == MODE_S) {
++      zicfilp_en = menvcfg->lpe;
++      IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
++    } else if (cpu.mode == MODE_U) {
++      zicfilp_en = senvcfg->lpe;
++      IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
++    }
++    if (zicfilp_en) {
++      uint32_t rs1 = (s->isa.instr.val >> 15) & 0x1f;
++      if (rs1 != 1 && rs1 != 5 && rs1 != 7) {
++        cpu.elp = 1;
++      } else {
++        cpu.elp = 0;
++      }
++    }
++  }
++
+ #ifdef CONFIG_SHARE
+   // See rvi/control.h:26. JALR should set the LSB to 0.
+   rtl_andi(s, s0, &cpu.gpr[1]._64, ~1UL);
+diff --git a/src/isa/riscv64/instr/rvc/exec.h b/src/isa/riscv64/instr/rvc/exec.h
+index 6d077b6f..3c0a22b2 100644
+--- a/src/isa/riscv64/instr/rvc/exec.h
++++ b/src/isa/riscv64/instr/rvc/exec.h
+@@ -37,6 +37,28 @@ def_EHelper(c_j) {
+ }
+ 
+ def_EHelper(c_jr) {
++  // Zicfilp: check if landing pad is expected after indirect jump
++  {
++    bool zicfilp_en = false;
++    if (cpu.mode == MODE_M) {
++      zicfilp_en = mseccfg->mlpe;
++    } else if (cpu.mode == MODE_S) {
++      zicfilp_en = menvcfg->lpe;
++      IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
++    } else if (cpu.mode == MODE_U) {
++      zicfilp_en = senvcfg->lpe;
++      IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
++    }
++    if (zicfilp_en) {
++      uint32_t rs1 = (s->isa.instr.val >> 15) & 0x1f;
++      if (rs1 != 1 && rs1 != 5 && rs1 != 7) {
++        cpu.elp = 1;
++      } else {
++        cpu.elp = 0;
++      }
++    }
++  }
++
+ #ifdef CONFIG_SHARE
+   // See rvi/control.h:26. JALR should set the LSB to 0.
+   rtl_andi(s, s0, dsrc1, ~1UL);
+@@ -50,6 +72,29 @@ def_EHelper(c_jr) {
+ 
+ def_EHelper(c_jalr) {
+   rtl_li(s, &cpu.gpr[1]._64, s->snpc);
++
++  // Zicfilp: check if landing pad is expected after indirect jump
++  {
++    bool zicfilp_en = false;
++    if (cpu.mode == MODE_M) {
++      zicfilp_en = mseccfg->mlpe;
++    } else if (cpu.mode == MODE_S) {
++      zicfilp_en = menvcfg->lpe;
++      IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
++    } else if (cpu.mode == MODE_U) {
++      zicfilp_en = senvcfg->lpe;
++      IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
++    }
++    if (zicfilp_en) {
++      uint32_t rs1 = (s->isa.instr.val >> 15) & 0x1f;
++      if (rs1 != 1 && rs1 != 5 && rs1 != 7) {
++        cpu.elp = 1;
++      } else {
++        cpu.elp = 0;
++      }
++    }
++  }
++
+ #ifdef CONFIG_SHARE
+   // See rvi/control.h:26. JALR should set the LSB to 0.
+   rtl_andi(s, s0, dsrc1, ~1UL);
 ```
-*(注意：尽管 `ret` (由 `p_ret` 拦截) 是用 `rs1=x1` 作为返回并无需触发 `lpad`，仍需引入此代码块，以确保若在此前 `cpu.elp == 1` 的状态下执行返回，其状态可被正确**清零**)*.
 
 修复后重新编译运行 M-mode Zicfilp 测试样例，NEMU 会在目标无 `lpad` 指令的地方正确抛出 `EX_SWC` 异常，修复成功。
 
+
+---
