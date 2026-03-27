@@ -686,6 +686,17 @@ index 97f4a5e2..2fd49a1e 100644
 - **使用 AM 框架**：推荐使用 AbstractMachine 提供的链接脚本和启动代码，确保程序正确链接并以 Raw Binary 形式加载。
 - **验证 Entry Point**：通过 `readelf -h` 确认程序的 Entry point address 是否与 NEMU 的 `RESET_VECTOR` 一致。
 
+### 6.2 案例：缺失裸机启动环境导致非法访存
+**现象**：使用 `objcopy` 转出的 `test.bin` 运行后，仅执行了极少数几条指令（例如 2 条）就再次爆出完全相同的 `HIT CRITICAL ERROR... epc: 0x0`！
+
+**原因分析**：
+1. **ABI 与执行环境不配**：在普通 Linux 环境下，程序入口 `_start`（如 glibc 或 Newlib 提供）在执行前依赖操作系统（OS）预先配置好栈指针（`sp`）和全局数据指针（`gp`）。
+2. **栈异常导致崩溃**：在 NEMU 的裸机环境中，`sp` 和 `gp` 等寄存器初始可能都是 `0`。当剥离了 ELF 的 `test.bin` 开始直接执行前几条启动代码时，只要遇到任何压栈操作（如 `addi sp, sp, -16` 然后 `sd ra, 0(sp)`），就会立刻触发 **Store/AMO Address Fault (`EX_SAF`)** 或者非法访存异常。
+3. **连锁反应**：该异常发生时，异常仍旧陷入 M-Mode。同理，NEMU 以双重 Trap 将 `mnstatus.nmie` 闭合，并跳转至未初始化的异常基地 `0x0` 获取指令，进而诱发同款 `EX_IAF` 与 `CRITICAL ERROR`！
+
+**结论**：在 NEMU 这类纯裸机直接运行 C 程序时，不能随意拷贝 Linux 平台上的默认编译产物。唯一可靠的方案是：引入专用的裸机 Runtime 环境（如 AM 的 `am-kernels`），其中提供针对 NEMU PC 起始地址定制的链接脚本以及负责配置硬件级栈帧的 `.S` 引导汇编程序。
+
+
 ## 7. 为什么 Linux 镜像可以运行，而简单的 C 程序不行？ (Why Linux works but your C program fails?)
 
 这是一个非常重要且基础的系统级编程问题。主要区别在于 **“自足性 (Self-sufficiency)”** 和 **“运行时环境 (Runtime Environment)”**：
@@ -704,14 +715,91 @@ index 97f4a5e2..2fd49a1e 100644
 
 **总结建议**：
 在 NEMU 上跑 C 程序，必须使用类似 **AbstractMachine (AM)** 的框架。AM 会提供那份关键的 `CRT0` 汇编代码，帮您初始化 `sp`、`gp` 以及实现能直接驱动硬件的 `printf`。
+## 8. 在 AbstractMachine (AM) 中配置 Zicfilp 支持 (Configuring Zicfilp in AM)
 
-### 6.2 案例：缺失裸机启动环境导致非法访存
-**现象**：使用 `objcopy` 转出的 `test.bin` 运行后，仅执行了极少数几条指令（例如 2 条）就再次爆出完全相同的 `HIT CRITICAL ERROR... epc: 0x0`！
+如果您已经拥有一个支持 Zicfilp 的自定义 GCC 分支（如 `59a869d`），并希望在 AM 框架中使用它，请按照以下步骤操作：
 
-**原因分析**：
-1. **ABI 与执行环境不配**：在普通 Linux 环境下，程序入口 `_start`（如 glibc 或 Newlib 提供）在执行前依赖操作系统（OS）预先配置好栈指针（`sp`）和全局数据指针（`gp`）。
-2. **栈异常导致崩溃**：在 NEMU 的裸机环境中，`sp` 和 `gp` 等寄存器初始可能都是 `0`。当剥离了 ELF 的 `test.bin` 开始直接执行前几条启动代码时，只要遇到任何压栈操作（如 `addi sp, sp, -16` 然后 `sd ra, 0(sp)`），就会立刻触发 **Store/AMO Address Fault (`EX_SAF`)** 或者非法访存异常。
-3. **连锁反应**：该异常发生时，异常仍旧陷入 M-Mode。同理，NEMU 以双重 Trap 将 `mnstatus.nmie` 闭合，并跳转至未初始化的异常基地 `0x0` 获取指令，进而诱发同款 `EX_IAF` 与 `CRITICAL ERROR`！
+### 8.1 注入自定义工具链
+在您的 Docker 容器环境中，AM 的构建系统通过 `CROSS_COMPILE` 变量来确定编译器路径。
+您可以通过修改 `abstract-machine/scripts/riscv64-nemu.mk` 或者在编译时通过命令行传入变量：
 
-**结论**：在 NEMU 这类纯裸机直接运行 C 程序时，不能随意拷贝 Linux 平台上的默认编译产物。唯一可靠的方案是：引入专用的裸机 Runtime 环境（如 AM 的 `am-kernels`），其中提供针对 NEMU PC 起始地址定制的链接脚本以及负责配置硬件级栈帧的 `.S` 引导汇编程序。
+```bash
+# 在编译时指定自定义工具链前缀
+make ARCH=riscv64-nemu CROSS_COMPILE=/path/to/your/custom/riscv64-unknown-linux-gnu-
+```
+
+### 8.2 开启 Zicfilp 编译选项
+您需要告诉编译器生成支持 Zicfilp 的指令（如 `lpad`）。
+修改 `abstract-machine/scripts/riscv64-nemu.mk`，找到 `CFLAGS` 定义处并添加：
+
+```makefile
+# 示例：添加 zicfilp 架构支持和相关标志
+CFLAGS += -march=rv64gc_zicfilp 
+# 或者根据您的编译器版本使用特定的探测标志，如 -mzfli
+```
+
+> [!IMPORTANT]
+> **必须全量重新编译 AM！**
+> 如果您只用了支持 Zicfilp 的编译器去编译应用程序（如 `main.c`），但没有用它去编译 AM 库本身（如 `putch` 所在的 `trm.c`），则会发生如下情况：
+> 1. `main.c` 中的间接跳转会设置 `elp = 1`。
+> 2. 跳入 AM 内部函数后，由于 AM 库函数开头没有 `lpad` 指令，会立即触发 `EX_SWC` (Exception 18)。
+> 3. 这正是您看到“执行了 329 条指令后触发 Double Trap”的原因——329 条指令刚好跑完了初始化代码，正准备调用第一个 AM 函数。
+
+### 8.3 解决双重 Trap 调试建议
+目前由于 `mtvec` (异常向量) 可能尚未配置，任何异常都会跳到 `0x0` 导致二次故障。
+建议在 `main` 函数的第一行手动设置 `mtvec` 到一个有效的处理函数，或者检查 AM 的 `init` 序列是否正确设置了它。
+
+---
+
+## 9. 案例研究：Zicfilp Landing Pad 检查失效问题 (Pseudo-instruction Bypass)
+
+### 9.1 问题现象
+在编写测试程序开启 M-mode Zicfilp 功能 (`mseccfg.MLPE = 1`) 后，执行特定的间接跳转指令 (`jr a0` 等)，如果跳转目标不包含 `lpad` 指令，理论上应该触发 `EX_SWC` (软件检查异常)。但在早期的 NEMU 实现中，测试程序正常结束，并未发生任何异常。
+
+### 9.2 根本原因分析 (Root Cause)
+经过跟踪 `jalr` 指令的执行路径，发现在 `src/isa/riscv64/instr/rvi/decode.h` 中的 `jalr_dispatch` 解码表定义了三种 `jalr` 处理逻辑：
+1. **`p_ret`**：匹配 `jalr x0, x1, 0`
+2. **`c_jr`**：匹配 `jalr x0, rs1, 0`
+3. **`jalr`**：通用的 `jalr` 处理器
+
+指令 `jr a0` (汇编为 `jalr x0, x10, 0`) 会被 NEMU 调度到 RVC 执行辅助宏 **`c_jr`** 中。
+最初在实现 Zicfilp 功能时，只在**通用 `jalr` 辅助宏 (`src/isa/riscv64/instr/rvi/control.h`)** 内引入了对 `mseccfg.MLPE` 验证以及给 `cpu.elp` 置位的逻辑。
+然而，像 `c_jr`、`c_jalr` 以及 `p_ret` 这类**伪指令实现 (Pseudo-instructions)**，在代码内部直接调用了底层的 `rtl_jr` 宏来更新 PC，**彻底绕过了 Zicfilp 的 `cpu.elp` 设置逻辑**。
+因此，当处理器执行到跳转目标地址时，因为 `cpu.elp` 仍然为 0，CPU 认为不需要进行 `lpad` 验证，从而导致异常机制失效。
+
+### 9.3 修复方案
+在以下三个宏定义的开头手动加入 Zicfilp 对 `cpu.elp` 的状态机维护代码。
+*   `src/isa/riscv64/instr/rvc/exec.h` 中的 **`c_jr`** 及 **`c_jalr`**
+*   `src/isa/riscv64/instr/pseudo.h` 中的 **`p_ret`**
+
+**修复的核心代码片段** (以 `c_jr` 为例)：
+```c
+def_EHelper(c_jr) {
+  // Zicfilp: 检查间接跳转后是否需要验证 Landing Pad
+  {
+    bool zicfilp_en = false;
+    if (cpu.mode == MODE_M) {
+      zicfilp_en = mseccfg->mlpe;
+    } else if (cpu.mode == MODE_S) {
+      zicfilp_en = menvcfg->lpe;
+      IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
+    } else if (cpu.mode == MODE_U) {
+      zicfilp_en = senvcfg->lpe;
+      IFDEF(CONFIG_RVH, if(cpu.v) zicfilp_en = zicfilp_en && henvcfg->lpe; )
+    }
+    if (zicfilp_en) {
+      uint32_t rs1 = (s->isa.instr.val >> 15) & 0x1f;
+      // Zicfilp 规定，如果使用 x1, x5 且不使用 x7 作为链接寄存器，则认为是软件返回（无需lpad）
+      if (rs1 != 1 && rs1 != 5 && rs1 != 7) {
+        cpu.elp = 1;
+      } else {
+        cpu.elp = 0;
+      }
+    }
+  }
+  // 执行原本的跳转逻辑...
+```
+*(注意：尽管 `ret` (由 `p_ret` 拦截) 是用 `rs1=x1` 作为返回并无需触发 `lpad`，仍需引入此代码块，以确保若在此前 `cpu.elp == 1` 的状态下执行返回，其状态可被正确**清零**)*.
+
+修复后重新编译运行 M-mode Zicfilp 测试样例，NEMU 会在目标无 `lpad` 指令的地方正确抛出 `EX_SWC` 异常，修复成功。
 
