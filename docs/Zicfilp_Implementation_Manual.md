@@ -728,14 +728,18 @@ CFLAGS += -march=rv64gc_zicfilp
 
 ### 9.2 根本原因分析 (Root Cause)
 经过跟踪 `jalr` 指令的执行路径，发现在 `src/isa/riscv64/instr/rvi/decode.h` 中的 `jalr_dispatch` 解码表定义了三种 `jalr` 处理逻辑：
-1. **`p_ret`**：匹配 `jalr x0, x1, 0`
-2. **`c_jr`**：匹配 `jalr x0, rs1, 0`
+1. **`p_ret`**：匹配 `jalr x0, x1, 0` (即 `ret`)
+2. **`c_jr`**：匹配 `jalr x0, rs1, 0` (即 `jr rs1`)
 3. **`jalr`**：通用的 `jalr` 处理器
 
-指令 `jr a0` (汇编为 `jalr x0, x10, 0`) 会被 NEMU 调度到 RVC 执行辅助宏 **`c_jr`** 中。
+**关键漏洞点**：
+指令 `jr a0` (汇编为 `jalr x0, x10, 0`) 会被 NEMU 调度到执行辅助宏 **`c_jr`** 中。
 最初在实现 Zicfilp 功能时，只在**通用 `jalr` 辅助宏 (`src/isa/riscv64/instr/rvi/control.h`)** 内引入了对 `mseccfg.MLPE` 验证以及给 `cpu.elp` 置位的逻辑。
-然而，像 `c_jr`、`c_jalr` 以及 `p_ret` 这类**伪指令实现 (Pseudo-instructions)**，在代码内部直接调用了底层的 `rtl_jr` 宏来更新 PC，**彻底绕过了 Zicfilp 的 `cpu.elp` 设置逻辑**。
-因此，当处理器执行到跳转目标地址时，因为 `cpu.elp` 仍然为 0，CPU 认为不需要进行 `lpad` 验证，从而导致异常机制失效。
+然而，像 `c_jr`、`c_jalr` 以及 `p_ret` 这类处理函数，在代码内部直接调用了底层的 `rtl_jr` 宏来更新 PC，**彻底绕过了 Zicfilp 的 `cpu.elp` 设置逻辑**。
+
+> [!NOTE]
+> **为什么 `.option norvc` 禁用了压缩指令依然会出问题？**
+> 虽然汇编中使用 `.option norvc` 确保了生成的是 32 位的机器码（如 `0x00050067`），但 NEMU 的解码器为了优化执行效率，将 **32 位的 `jr` 伪指令** 与 **16 位的 `c.jr` 压缩指令** 在内部调度到了同一个处理函数 `c_jr`。因此，即使没有使用 RVC 指令，只要满足 `rd=x0, imm=0` 条件的跳转，都会进入这个缺乏 Zicfilp 状态维护的 `c_jr` 路径，导致劫持检查失效。
 
 ### 9.3 修复方案
 在以下三个宏定义的开头手动加入 Zicfilp 对 `cpu.elp` 的状态机维护代码。
