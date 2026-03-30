@@ -849,5 +849,56 @@ index 6d077b6f..3c0a22b2 100644
 
 修复后重新编译运行 M-mode Zicfilp 测试样例，NEMU 会在目标无 `lpad` 指令的地方正确抛出 `EX_SWC` 异常，修复成功。
 
+### 9.4 修复二：Tcache 指令值缺失导致合法 lpad 被误拒 (Stale Instruction Fetch Bug)
+
+#### 问题现象
+在修复伪指令绕过后，使用两个测试程序验证：
+- **`M-36.bin`**：`addi a0, a0, 36`，跳转目标是有效的 `auipc zero, 1` (lpad)，**应该通过**。
+- **`M-32.bin`**：`addi a0, a0, 32`，跳转目标是 `nop`，**应该被拦截**。
+
+但实际运行发现 **两者都被拦截报错**，即合法的 lpad 也被误报为非法。
+
+#### 根本原因
+通过调试追踪发现，在 `cpu-exec.c` 中 `elp` 检查时，`s->isa.instr.val` 的值始终为 `0x00000000`：
+```
+[ZICFILP] elp=1 at pc=0x80000160 instr=0x00000000 low12=0x000
+```
+原因是：在 `CONFIG_PERF_OPT` 优化模式下，`jalr` / `c_jr` 执行间接跳转后，通过 `jr_fetch()` 从 **tcache（指令翻译缓存）** 获取目标地址的 `Decode` 结构体。然而，tcache 中缓存的 `Decode` 条目 **不保存原始的 `isa.instr.val`** 机器码字段（该字段在首次解码后可能被置零或未被写回），因此 `elp` 检查读到的始终是 `0x00000000`。由于 `0x000` ≠ `0x017`，所有跳转目标都被错误地判定为非 lpad 指令。
+
+#### 修复方案
+将 `cpu-exec.c` 中两处 `elp` 检查的指令读取方式，从依赖 tcache 中的 `s->isa.instr.val`，改为通过 `vaddr_ifetch(s->pc, 4)` **直接从虚拟内存读取** 目标地址处的指令：
+
+```diff
+--- a/src/cpu/cpu-exec.c
++++ b/src/cpu/cpu-exec.c
+@@ CONFIG_PERF_OPT path (line ~420)
+ #ifdef CONFIG_ISA_riscv64
+     if (unlikely(cpu.elp == 1)) {
+-      if ((s->isa.instr.val & 0x00000FFF) != 0x00000017) {
++      uint32_t target_instr = vaddr_ifetch(s->pc, 4);
++      if ((target_instr & 0x00000FFF) != 0x00000017) {
+         longjmp_exception(EX_SWC);
+       }
+     }
+ #endif
+
+@@ non-PERF_OPT path (line ~714)
+ #ifdef CONFIG_ISA_riscv64
+     if (unlikely(cpu.elp == 1)) {
+-      if ((s.isa.instr.val & 0x00000FFF) != 0x00000017) {
++      uint32_t target_instr = vaddr_ifetch(s.pc, 4);
++      if ((target_instr & 0x00000FFF) != 0x00000017) {
+         longjmp_exception(EX_SWC);
+       }
+     }
+ #endif
+```
+
+#### 验证结果
+| 测试用例 | 跳转偏移 | 目标指令 | 预期行为 | 实际结果 |
+|---------|---------|---------|---------|---------|
+| M-36.bin | +36 | `auipc zero, 1` (lpad) | 正常通过 | ✅ `HIT GOOD TRAP` (104条指令) |
+| M-32.bin | +32 | `nop` | 触发 EX_SWC | ✅ `CRITICAL ERROR` (94条指令) |
+| linux.bin | — | — | 正常启动 | ✅ `Hello, XiangShan!` |
 
 ---
