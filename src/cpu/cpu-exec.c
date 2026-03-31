@@ -419,6 +419,7 @@ static void execute(int n) {
 #ifdef CONFIG_ISA_riscv64
     if (unlikely(cpu.elp == 1)) {
       uint32_t target_instr = vaddr_ifetch(s->pc, 4);
+      s->isa.instr.val = target_instr; // Ensure EHelper has correct instruction bits for fine-grained check
       if ((target_instr & 0x00000FFF) != 0x00000017) {
         longjmp_exception(EX_SWC);
       }
@@ -713,6 +714,7 @@ static void execute(int n) {
 #ifdef CONFIG_ISA_riscv64
     if (unlikely(cpu.elp == 1)) {
       uint32_t target_instr = vaddr_ifetch(s.pc, 4);
+      s.isa.instr.val = target_instr; // Ensure EHelper has correct instruction bits for fine-grained check
       if ((target_instr & 0x00000FFF) != 0x00000017) {
         longjmp_exception(EX_SWC);
       }

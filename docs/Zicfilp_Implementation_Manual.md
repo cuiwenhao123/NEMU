@@ -849,24 +849,27 @@ index 6d077b6f..3c0a22b2 100644
 
 修复后重新编译运行 M-mode Zicfilp 测试样例，NEMU 会在目标无 `lpad` 指令的地方正确抛出 `EX_SWC` 异常，修复成功。
 
-### 9.4 修复二：Tcache 指令值缺失导致合法 lpad 被误拒 (Stale Instruction Fetch Bug)
+### 9.4 修复二：Tcache 指令值缺失导致合法 lpad 被误拒 (Stale Instruction Fetch Bug) 与细粒度检查验证
 
 #### 问题现象
-在修复伪指令绕过后，使用两个测试程序验证：
-- **`M-36.bin`**：`addi a0, a0, 36`，跳转目标是有效的 `auipc zero, 1` (lpad)，**应该通过**。
-- **`M-32.bin`**：`addi a0, a0, 32`，跳转目标是 `nop`，**应该被拦截**。
+在修复粗粒度绕过后，我们进一步测试 Zicfilp 的**细粒度标签匹配**（即间接跳转前的 `x7[31:12]` 必须与着陆点 `auipc` 的 `LPL` 立即数片段一致）。在使用测试程序验证时发现：
+- 如果跳转目标是有效的 `auipc zero, 1`：**应该通过**，但实际却被拦截。
+- 如果跳转目标是 `nop`：被正确拦截。
+- 如果是循环执行：在未命中的第一圈拦截正常，一旦缓存命中后，无论怎样错误的标签都会被放行。
 
-但实际运行发现 **两者都被拦截报错**，即合法的 lpad 也被误报为非法。
+即：即使是合法的 Landing Pad，会被误报为非法跳跃；而循环中非法的跳跃，反而会被漏过。
 
-#### 根本原因
-通过调试追踪发现，在 `cpu-exec.c` 中 `elp` 检查时，`s->isa.instr.val` 的值始终为 `0x00000000`：
-```
-[ZICFILP] elp=1 at pc=0x80000160 instr=0x00000000 low12=0x000
-```
-原因是：在 `CONFIG_PERF_OPT` 优化模式下，`jalr` / `c_jr` 执行间接跳转后，通过 `jr_fetch()` 从 **tcache（指令翻译缓存）** 获取目标地址的 `Decode` 结构体。然而，tcache 中缓存的 `Decode` 条目 **不保存原始的 `isa.instr.val`** 机器码字段（该字段在首次解码后可能被置零或未被写回），因此 `elp` 检查读到的始终是 `0x00000000`。由于 `0x000` ≠ `0x017`，所有跳转目标都被错误地判定为非 lpad 指令。
+#### 根本原因 (The Tcache Wildcard Bug)
+通过调试追踪发现，这依旧是 NEMU 的 `CONFIG_PERF_OPT` 优化模式结合 Tcache（指令翻译缓存）导致的：
+1. `jalr` 执行间接跳转后，通过 `jr_fetch()` 从 Tcache 获取目标地址的 `Decode` 结构体。
+2. Tcache 为了节省空间，**不保存原始的 `isa.instr.val` 机器码**字段。
+3. 当提取缓存块执行细粒度检查时，读到的 `s->isa.instr.val` 变成了 `0x00000000`。
+4. 这导致提取出的 `LPL`（`lpl = 0x00000000 >> 12`）变成了 `0`。
+5. 在 RISC-V 规范中，**`LPL = 0` 被定义为万能通配符**。细粒度检查代码 `if (lpl != x7_lpl && lpl != 0)` 中的第二个条件 `lpl != 0` 变成了 `False`。
+6. 因此，无论 `x7` 里装的是什么限制标签，整个错误判定条件都会失效，导致危险跳转被当作“万能着陆点”非法放行。
 
-#### 修复方案
-将 `cpu-exec.c` 中两处 `elp` 检查的指令读取方式，从依赖 tcache 中的 `s->isa.instr.val`，改为通过 `vaddr_ifetch(s->pc, 4)` **直接从虚拟内存读取** 目标地址处的指令：
+#### 修复方案：强制内存读取同步 (`vaddr_ifetch`)
+为了彻底修复该漏洞，在 `cpu-exec.c` 的检查机制中，我们不仅通过 `vaddr_ifetch(s->pc, 4)` 从内存**直接拿取真实指令**，更重要的是**将其强制同步回执行器的上下文中**：
 
 ```diff
 --- a/src/cpu/cpu-exec.c
@@ -876,29 +879,34 @@ index 6d077b6f..3c0a22b2 100644
      if (unlikely(cpu.elp == 1)) {
 -      if ((s->isa.instr.val & 0x00000FFF) != 0x00000017) {
 +      uint32_t target_instr = vaddr_ifetch(s->pc, 4);
++      s->isa.instr.val = target_instr; // 同步给后续 EHelper 以支持细粒度解析
 +      if ((target_instr & 0x00000FFF) != 0x00000017) {
          longjmp_exception(EX_SWC);
        }
      }
  #endif
 
-@@ non-PERF_OPT path (line ~714)
+@@ non-PERF_OPT path (line ~714) 同理
  #ifdef CONFIG_ISA_riscv64
      if (unlikely(cpu.elp == 1)) {
 -      if ((s.isa.instr.val & 0x00000FFF) != 0x00000017) {
 +      uint32_t target_instr = vaddr_ifetch(s.pc, 4);
++      s.isa.instr.val = target_instr; // 同步给后续 EHelper 以支持细粒度解析
 +      if ((target_instr & 0x00000FFF) != 0x00000017) {
          longjmp_exception(EX_SWC);
        }
      }
  #endif
 ```
+通过加入 `s->isa.instr.val = target_instr;` 这行核心同步代码，下游的 `auipc` 细粒度拦截辅助宏终于可以取得真实的 `LPL` 参数，打破了 `0` 伪全通配符的安全漏洞。
 
 #### 验证结果
-| 测试用例 | 跳转偏移 | 目标指令 | 预期行为 | 实际结果 |
-|---------|---------|---------|---------|---------|
-| M-36.bin | +36 | `auipc zero, 1` (lpad) | 正常通过 | ✅ `HIT GOOD TRAP` (104条指令) |
-| M-32.bin | +32 | `nop` | 触发 EX_SWC | ✅ `CRITICAL ERROR` (94条指令) |
-| linux.bin | — | — | 正常启动 | ✅ `Hello, XiangShan!` |
+| 测试用例文件 | 关键逻辑设置 | 预期防线行为 | 实际运行结果 |
+|------------|-------------|------------|------------|
+| `M-32.bin` | 跳转到 `nop` | 粗粒度拦截 (Opcode 错误) | ✅ `CRITICAL ERROR` (EX_SWC 触发，94条指令) |
+| `M-36-Jump-Correct-Label-Fine-Grained.bin` | `li x7, 4096`; 跳向 `auipc zero, 1` | 标签成功匹配 (`1 == 1`)，放行 | ✅ `HIT GOOD TRAP` (104条指令跑通) |
+| `M-36-Jump-Error-Label-Fine-Grained.bin` | `li x7, 4096`; 跳向 `auipc zero, 2` | 拦截！目标标签为 `2` 不匹配 | ✅ `CRITICAL ERROR` (EX_SWC 触发，95条指令) |
+
+结论：修复 Tcache 丢值同步问题后，NEMU 已经具备了完整的**粗粒度 (lpad 指令形态限制)** 与 **细粒度 (x7 寄存器与 LPL 标签强一致)** Zicfilp 安全拦截能力。
 
 ---
