@@ -100,6 +100,9 @@ def_EHelper(auipc) {
     }
     uint32_t lpl = (s->isa.instr.val >> 12) & 0xFFFFF;
     uint32_t x7_lpl = (reg_l(7) >> 12) & 0xFFFFF;
+
+    printf("[ZICFILP-DEBUG] Checking lpad at pc=0x%lx: instr=0x%08x, expected_lpl(x7)=0x%x, actual_lpl=0x%x\n", s->pc, s->isa.instr.val, x7_lpl, lpl);
+    
     if (lpl != x7_lpl && lpl != 0) {
       longjmp_exception(EX_SWC);
     }

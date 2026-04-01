@@ -909,19 +909,35 @@ index 6d077b6f..3c0a22b2 100644
 
 结论：修复 Tcache 丢值同步问题后，NEMU 已经具备了完整的**粗粒度 (lpad 指令形态限制)** 与 **细粒度 (x7 寄存器与 LPL 标签强一致)** Zicfilp 安全拦截能力。
 
-### 9.5 附加说明：M/S/U-Mode 测试下的内联汇编栈破坏与 C 调用约定冲突
+### 9.5 附加说明：M/S/U-Mode 测试下的内联汇编编译器冲突问题
 
 #### 问题现象与原因分析
-在尝试验证 S-Mode (`M2S-36.bin`) 或 U-Mode (`M2U-36.bin`) 下的 Zicfilp 功能时，若出现 `cause NO: 1, epc: 0x00000000`（指令访问异常），且日志显示 Zicfilp 检查已通过（如 `actual_lpl=0x1`），这通常不是模拟器逻辑问题，而是测试程序内部的栈破坏。
+在尝试验证 S-Mode (`M2S-36.bin`) 或 U-Mode (`M2U-36.bin`) 下的 Zicfilp 功能时，NEMU 可能报出 `BAD TRAP` 或 `cause NO: 1, epc: 0x00000000`，且直接结束测试。
+经过汇编级分析发现：**Zicfilp 的检查机制完美无瑕**，真正的罪魁祸首是 C 语言提权函数（如 `switch_to_umode`）在内联汇编的设计上**破坏了 GCC 的函数边界和调用约定**。
 
-根本原因是内联汇编尝试手动恢复栈指针并执行 `mret`，不仅计算偏移量容易出错（若函数未内联），更重要的是它破坏了 C 编译器的原生栈帧。当函数试图从 `main` 返回时，由于栈指针已被提前破坏，它读到了全零地址。
+1. **第一种错误（毁坏栈帧）：** 手动在汇编里 `addi sp, sp, 16` 会绕过 C 的 Epilogue 出栈，导致 `main` 函数用错误的 `sp` 读取了全零的假指令地址，跳向 0x0 使引擎崩溃。
+2. **第二种错误（利用 `ra` 但遭遇内联）：** 粗暴地 `csrw mepc, ra` 只能在 `switch_to_umode` **未被内联**时才有效。当 GCC 将其内联入 `main()` 后，`ra` 储存的是 `main()` 应该返回的最终地址（如 `_trm_init`）。此时的 `mret` 竟然变相做到了**跳过 `main()` 提权语句之后的全部代码，直接宣告测试结束**，从而完美避开了所有 Zicfilp 指令检查！
 
-#### 提权跳转的“黄金法则”
-在作为独立 C 函数调用时，直接信任并使用 `ra` 寄存器。
+#### 模式切换的“终极解法”（内联豁免标签）
+为了写出一段既不会破坏栈，又不会被编译器内联所影响的“执行片段”，我们必须在汇编内部定义**本地绝对地址锚点 (Local Label)**。
 
-#### 修复后的提权/降权函数方案
+##### 通用 U-Mode 切换代码片段 (switch_to_umode) 
+```c
+void switch_to_umode() {
+    __asm__ __volatile__(
+        "li    t0, 3\n"
+        "slli  t0, t0, 11\n"
+        "csrrc x0, mstatus, t0\n"  // 核心：清除 MPP (bit 11-12) 为 00 (User)
+        "la    t0, 1f\n"           // 核心：精准捕捉紧挨着 mret 后的本机绝对地址，存入 mepc
+        "csrw  mepc, t0\n"
+        "mret\n"                   // 执行切换，物理起跳
+        "1:\n"                     // ← 降落在同函数的下一个机器周期，继续由 C 编译器执行！
+        ::: "t0", "memory"
+    );
+}
+```
 
-##### 1. S-Mode 切换 (`switch_to_smode`)
+##### 通用 S-Mode 切换代码片段 (switch_to_smode)
 ```c
 void switch_to_smode() {
     __asm__ __volatile__(
@@ -930,27 +946,20 @@ void switch_to_smode() {
         "and  t0, t0, t1\n"
         "li   t1, 1\n" "slli t1, t1, 11\n"
         "or   t0, t0, t1\n"
-        "csrw mstatus, t0\n" // 设置 MPP=1
-        "csrw mepc, ra\n"    // 核心：直接利用 ra 作为返回点
+        "csrw mstatus, t0\n"        // 设置 MPP=1 (Supervisor)
+        "la    t0, 1f\n"           // 精准捕捉地址
+        "csrw  mepc, t0\n"
         "mret\n"
+        "1:\n"
         ::: "t0", "t1", "memory"
     );
 }
 ```
 
-##### 2. U-Mode 切换 (`switch_to_umode`)
-```c
-void switch_to_umode() {
-    __asm__ __volatile__(
-        "li    t0, 3\n"
-        "slli  t0, t0, 11\n"
-        "csrrc x0, mstatus, t0\n" // 核心：清除 MPP (bit 11-12) 为 00 (User)
-        "csrw  mepc, ra\n"        // 直接利用 ra 作为返回点
-        "mret\n"
-        ::: "t0", "memory"
-    );
-}
-```
-使用上述方案后，程序将平滑返回 `main()` 的内联跳转区，并在对应权限模式下完成 Zicfilp 校验。
+**上述代码的设计艺术在于：**
+- **对于栈帧：** 它没有动 `sp` 和 `ra`，后续退出依然由 C 编译器完美的完成栈释放。
+- **对于内联：** 如果被内联入 `main`，`1:` 后就是那行 `auipc a0, 0` 测试句；如果没有被内联，`1:` 后就是原函数的 `ret` 退出。
+
+重构替换此代码后，M-Mode 可安全地平滑切换至 S/U-Mode 并无损执行之后的 Zicfilp 代码，在通过了细粒度的通配拦截后，正常返回并打印 `HIT GOOD TRAP`。
 
 ---
