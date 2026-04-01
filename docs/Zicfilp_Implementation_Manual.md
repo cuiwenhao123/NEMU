@@ -909,4 +909,43 @@ index 6d077b6f..3c0a22b2 100644
 
 结论：修复 Tcache 丢值同步问题后，NEMU 已经具备了完整的**粗粒度 (lpad 指令形态限制)** 与 **细粒度 (x7 寄存器与 LPL 标签强一致)** Zicfilp 安全拦截能力。
 
+### 9.5 附加说明：S-Mode 测试下的内联汇编栈破坏与 C 调用约定约定冲突 (M2S-36.bin)
+
+#### 问题现象与原因分析
+在尝试使用 `M2S-36.bin` 验证 S-Mode 下的 Zicfilp 功能时，NEMU 报出了 `cause NO: 1, epc: 0x00000000`（指令访问异常）。
+细究日志发现：**S-Mode 下的 Zicfilp 细粒度检查实际上已经完美通过**（`actual_lpl=0x1`），崩溃发生在跳向 `0x0` 时。
+
+之前提供的包含 `auipc t0, 0; addi t0, t0, 16` 的修改版本之所以失败，是因为它**错误地假设了 `switch_to_smode` 会被 GCC 内联 (Inline)**。
+实际编译时，GCC 将 `switch_to_smode` 视为了一个独立的函数（由于它是作为普通 C 函数调用的叶子函数）。
+因此，计算相对偏移 `auipc t0, 0` 会指向当前函数末尾外面的**下一段内存（恰好越界跳进了紧接着编译的 `set_S_Zicfilp` 函数中）**，导致触发了非预期的指令逻辑和异常。
+
+#### 正确的修复方式
+既然 `switch_to_smode` 被作为独立的 C 函数调用（被 `main` 通过 `jal r` 呼叫），那么在它执行时，**寄存器 `ra` 天然就保存着 `main()` 函数中下一条语句的正确返回地址**！
+我们只需要利用 C 语言的调用约定（Calling Convention），直接将 `ra` 的值交给 `mepc`，即可借助 `mret` 完美且无缝地跳回 `main()` 并提权，并且绝不能去手动 `addi sp, sp, 16` 破坏 C 编译器的原生栈帧。
+
+#### 最终稳定代码
+移除一切手动偏移量计算和 `sp` 破坏，直接信任并利用 `ra` 返回：
+```c
+void switch_to_smode()
+{
+     __asm__ __volatile__(
+        "csrr t0, mstatus\n"
+        "li   t1, 3\n"
+        "slli t1, t1, 11\n"
+        "xori t1, t1, -1\n"
+        "and  t0, t0, t1\n"
+        "li   t1, 1\n"
+        "slli t1, t1, 11\n"
+        "or   t0, t0, t1\n"
+        "csrw mstatus, t0\n"
+
+        // 直接使用调用者 (main) 保存在 ra 中的返回地址作为 S-Mode 的切入点
+        "csrw mepc, ra\n"      
+        "mret\n"               
+        : : : "t0", "t1", "memory"
+    );
+}
+```
+使用上述代码重新编译 `M2S-36.bin`，它将正常从 M-Mode 返回 `main()` 的内联跳转区，并在 S-Mode 下完成所有合法的 Zicfilp 检查，在测试结尾正确退出。
+
 ---
